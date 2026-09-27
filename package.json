@@ -1,0 +1,15 @@
+{
+  "name": "eduhub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "师枢 EduHub —— 课外班排课与教务管理平台（排课 / 签到 / 课堂记录）",
+  "scripts": {
+    "setup": "npm --prefix server install && npm --prefix web install",
+    "dev:server": "npm --prefix server run dev",
+    "dev:web": "npm --prefix web run dev",
+    "build": "npm --prefix web run build",
+    "start": "npm --prefix server start",
+    "test": "npm --prefix server test",
+    "seed": "npm --prefix server run seed"
+  }
+}
