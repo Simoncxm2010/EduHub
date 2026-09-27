@@ -1,0 +1,12 @@
+services:
+  eduhub:
+    build: .
+    container_name: eduhub
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      # 生产环境务必设置一个随机长字符串
+      - JWT_SECRET=please-change-me
+    volumes:
+      - ./server/data:/app/server/data
