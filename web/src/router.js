@@ -11,6 +11,7 @@ const routes = [
   { path: '/lessons/:id', component: () => import('./views/LessonDetail.vue') },
   { path: '/requests', component: () => import('./views/Requests.vue') },
   { path: '/availability', component: () => import('./views/Availability.vue') },
+  { path: '/notifications', component: () => import('./views/Notifications.vue') },
   { path: '/admin', component: () => import('./views/Admin.vue'), meta: { admin: true } },
   { path: '/me', component: () => import('./views/Me.vue') },
   { path: '/:pathMatch(.*)*', redirect: '/' },

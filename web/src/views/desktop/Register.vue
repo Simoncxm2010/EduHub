@@ -1,18 +1,19 @@
 <script setup>
 import { ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 
 const router = useRouter();
+const route = useRoute();
 const auth = useAuthStore();
 
 const name = ref('');
 const phone = ref('');
 const password = ref('');
 const role = ref('teacher');
-const code = ref('');
+const code = ref(String(route.query.invite || ''));
 const loading = ref(false);
 
 async function submit() {

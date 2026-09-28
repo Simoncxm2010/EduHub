@@ -19,6 +19,43 @@ const stats = ref(null);
 const loading = ref(true);
 const exporting = ref(false);
 
+/* 收费结算（按学生月度统计） */
+const billMonth = ref(fmtDate(new Date()).slice(0, 7));
+const billing = ref(null);
+
+function monthRange(m) {
+  const [y, mo] = m.split('-').map(Number);
+  const last = new Date(y, mo, 0).getDate();
+  return [`${m}-01`, `${m}-${String(last).padStart(2, '0')}`];
+}
+
+async function loadBilling() {
+  try {
+    const [from, to] = monthRange(billMonth.value);
+    billing.value = await api.get(`/classes/${classId}/billing`, { params: { from, to } });
+  } catch (e) {
+    billing.value = null;
+  }
+}
+
+async function exportBilling() {
+  try {
+    const [from, to] = monthRange(billMonth.value);
+    const blob = await api.get(`/classes/${classId}/billing/export`, { params: { from, to }, responseType: 'blob' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${info.value.class.name}-收费结算-${billMonth.value}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast({ type: 'success', message: '结算单已导出' });
+  } catch (e) {
+    toastError(e);
+  }
+}
+
 async function load() {
   loading.value = true;
   try {
@@ -28,6 +65,7 @@ async function load() {
     upcoming.value = d.lessons.slice(0, isDesktop.value ? 8 : 5);
     if (auth.canTeach) {
       stats.value = await api.get(`/classes/${classId}/stats`);
+      loadBilling();
     }
   } catch (e) {
     toastError(e);
@@ -62,9 +100,11 @@ async function exportCsv() {
 }
 
 async function copyCode() {
+  // 微信里发链接，学生打开注册页自动带码进班
+  const link = `${location.origin}/register?invite=${info.value.class.invite_code}`;
   try {
-    await navigator.clipboard.writeText(info.value.class.invite_code);
-    showToast('邀请码已复制');
+    await navigator.clipboard.writeText(`邀请你加入「${info.value.class.name}」，注册后自动进班：${link}`);
+    showToast({ type: 'success', message: '邀请链接已复制，发给学生即可' });
   } catch {
     showToast(`邀请码：${info.value.class.invite_code}`);
   }
@@ -135,7 +175,7 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
               <van-tag plain type="primary" style="cursor: pointer" @click="copyCode">点击复制</van-tag>
             </div>
             <div class="invite-code">{{ info.class.invite_code }}</div>
-            <div class="muted" style="text-align: center">学生注册后，在「班级」页输入邀请码即可加入</div>
+            <div class="muted" style="text-align: center">复制链接发给学生，注册后自动加入本班</div>
           </div>
 
           <div v-if="auth.canTeach" class="card">
@@ -232,6 +272,34 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
           </template>
         </div>
       </template>
+
+      <div v-if="billing" class="card">
+        <div style="display: flex; align-items: center; justify-content: space-between">
+          <span style="font-size: 15px; font-weight: 600">收费结算</span>
+          <input v-model="billMonth" type="month" style="border: 1px solid #d9dfec; border-radius: 8px; padding: 5px 8px; font-family: inherit" @change="loadBilling" />
+        </div>
+        <div class="muted" style="margin-top: 8px">
+          {{ billing.range[0] }} 至 {{ billing.range[1] }} · 课次 {{ billing.lesson_count }} ·
+          <b style="color: #07c160">合计应收 {{ billing.total_amount }} 元</b>
+        </div>
+        <div v-if="!billing.class.rate" class="muted" style="margin-top: 6px; color: #e07a00">
+          还没设置单节课酬，先在「班级设置」里填写
+        </div>
+        <div v-for="s in billing.stats" :key="s.id" style="border-top: 1px solid #f1f3f8; padding: 10px 0 2px">
+          <div style="display: flex; align-items: baseline; gap: 8px">
+            <span style="font-size: 14px; font-weight: 600; flex: 1">{{ s.name }}</span>
+            <span style="font-size: 14px; font-weight: 700; color: var(--van-primary-color)">{{ s.amount }} 元</span>
+          </div>
+          <div class="muted" style="margin-top: 3px">
+            出勤 {{ s.attended }}<span v-if="s.late">（含迟到 {{ s.late }}）</span> · 请假 {{ s.leave }} · 缺勤 {{ s.absent }} · 未记录 {{ s.unmarked }}
+          </div>
+        </div>
+        <van-empty v-if="!billing.stats.length" image="search" description="班级还没有学生" style="padding: 14px 0" />
+        <div style="margin-top: 12px">
+          <van-button size="small" round block plain icon="down" @click="exportBilling">导出结算单 CSV</van-button>
+        </div>
+        <div class="muted" style="margin-top: 8px">口径：出勤与迟到计费，请假与缺勤不计费</div>
+      </div>
 
       <div class="section-head">
         <span>近期课时</span>

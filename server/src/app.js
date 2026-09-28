@@ -10,6 +10,7 @@ import requestRoutes from './routes/requests.js';
 import availabilityRoutes from './routes/availability.js';
 import calendarRoutes from './routes/calendar.js';
 import adminRoutes from './routes/admin.js';
+import notificationRoutes from './routes/notifications.js';
 import { uploadsDir } from './db.js';
 import { authRequired } from './middleware.js';
 import { ApiError } from './util.js';
@@ -40,6 +41,7 @@ export function createApp() {
   app.use('/api/availability', availabilityRoutes);
   app.use('/api/calendar', calendarRoutes);
   app.use('/api/admin', adminRoutes);
+  app.use('/api/notifications', notificationRoutes);
   app.use('/api', (req, res) => res.status(404).json({ message: '接口不存在' }));
 
   // 生产模式：托管前端构建产物（web/dist），未登录路径回退到 index.html

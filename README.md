@@ -35,8 +35,9 @@
 | 签到留痕 | 课堂照片 + 教师签名 + 逐学生手写签名 | 自助拍照 + 手写签名 |
 | 请假与预约 | 审批（通过请假自动记为「请假」；通过预约自动建课并二次校验冲突） | 提交申请、查看审批结果、撤销 |
 | 课堂记录 | 记录授课内容与作业 | 查看内容与作业 |
+| 站内通知 | 新申请实时提醒（铃铛角标） | 审批结果即时通知 |
 | 手机日历 | 订阅地址（webcal）自动同步、导出 .ics、从 .ics 导入排课 | 订阅自己的课表 |
-| 统计与导出 | 花名册出勤率、课时签到明细 CSV、本月课酬 | 自己的申请与签到情况 |
+| 统计与导出 | 花名册出勤率、课时签到明细 CSV、按学生收费结算单 CSV、本月课酬 | 自己的申请与签到情况 |
 | 管理后台 | 系统概览、用户/角色/权限、启停用、重置密码、全部班级 | — |
 
 ### 智能协调时间怎么用
@@ -45,6 +46,18 @@
 2. 点「开始匹配」：系统把**老师空档 ∩ 学生空档 ∩ 无排课冲突**三者取交集，按半小时粒度枚举候选，并按「有空人数」从多到少排序，同时列出谁没空。
 3. 老师可以直接把候选时段排成课；学生可以据此发起预约，交由老师审批。
 4. 没有学生填写时段时，结果只反映老师的空档，仍可用于排课。
+
+### 收费结算
+
+在班级详情页选月份，即可看到每个学生当月的课次、出勤（含迟到）、请假、缺勤与应收金额
+（出勤 × 单节课酬），一键导出带 BOM 的结算单 CSV，Excel 直接打开。口径：出勤与迟到计费，
+请假与缺勤不计费；金额只按已记录的考勤统计。
+
+### 邀请链接
+
+班级详情页「复制」的不是光秃秃的邀请码，而是一条注册链接：
+学生在微信里点开 → 注册页自动带码 → 注册完成自动加入班级。
+注册页也可以手动填邀请码。
 
 ## 双端界面：不是响应式拉伸，而是两套界面
 
@@ -169,12 +182,14 @@ PORT=8787 npm start               # 单进程托管 API + 静态页面
 - `GET/PUT /availability` `GET /availability/class/:id` `GET /availability/match`
 - `GET /calendar/feed.ics`（凭令牌，无需登录）`GET /calendar/feed-url`
   `POST /calendar/feed-token/reset` `GET /calendar/export.ics` `POST /calendar/import.ics`
+- `GET /notifications` `POST /notifications/read` `DELETE /notifications`（站内通知）
+- `GET /classes/:id/billing` `GET /classes/:id/billing/export`（收费统计与结算单）
 - `GET /admin/stats` `GET/POST /admin/users` `PUT /admin/users/:id/role`
   `PUT /admin/users/:id/status` `PUT /admin/users/:id/password` `DELETE /admin/users/:id`
   `GET /admin/classes`（以上需管理员及以上）
 
-运行测试：`npm test`（75 个接口用例，覆盖权限矩阵、账号启停用、签到留痕与隐私隔离、
-图片鉴权、冲突检测与批量排课、智能协调、申请审批全链路、日历导入导出、CSV 注入防护）。
+运行测试：`npm test`（87 个接口用例，覆盖权限矩阵、账号启停用、签到留痕与隐私隔离、
+图片鉴权、冲突检测与批量排课、智能协调、申请审批全链路、日历导入导出、CSV 注入防护、站内通知、收费结算）。
 
 ## 数据备份
 

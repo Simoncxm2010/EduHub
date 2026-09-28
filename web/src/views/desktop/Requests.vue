@@ -4,7 +4,7 @@ import { showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import Modal from '../../ui/Modal.vue';
-import { BADGE, REQUEST_KIND, REQUEST_STATUS, WEEKDAY_SHORT } from '../../utils';
+import { REQUEST_KIND, REQUEST_STATUS, WEEKDAY_SHORT } from '../../utils';
 
 const auth = useAuthStore();
 const list = ref([]);

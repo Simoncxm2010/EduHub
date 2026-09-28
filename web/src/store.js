@@ -5,6 +5,7 @@ export const useAuthStore = defineStore('auth', {
   state: () => ({
     user: JSON.parse(localStorage.getItem('eduhub_user') || 'null'),
     token: localStorage.getItem('eduhub_token') || '',
+    unread: 0,
   }),
   getters: {
     isTeacher: (s) => s.user?.role === 'teacher',
@@ -34,6 +35,23 @@ export const useAuthStore = defineStore('auth', {
       const d = await api.get('/auth/me');
       this.user = d.user;
       localStorage.setItem('eduhub_user', JSON.stringify(d.user));
+    },
+    async fetchUnread() {
+      if (!this.token) return;
+      try {
+        const d = await api.get('/notifications', { params: { limit: 1 } });
+        this.unread = d.unread_count || 0;
+      } catch {
+        this.unread = 0;
+      }
+    },
+    async markAllRead() {
+      try {
+        const d = await api.post('/notifications/read', { all: true });
+        this.unread = d.unread_count || 0;
+      } catch {
+        /* 忽略 */
+      }
     },
     logout() {
       // 清掉服务端下发的图片鉴权 Cookie（失败也不影响本地登出）

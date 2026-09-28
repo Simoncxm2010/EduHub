@@ -19,15 +19,29 @@ onMounted(async () => {
   }
 });
 
-const statItems = computed(() => [
-  { label: '本周课时', value: dash.value.stats.week_lessons ?? 0, icon: 'calendar-o' },
-  {
-    label: auth.canTeach ? '学生人数' : '已加入班级',
-    value: dash.value.stats.student_count ?? dash.value.stats.class_count ?? 0,
-    icon: 'friends-o',
-  },
-  { label: '班级数量', value: dash.value.stats.class_count ?? 0, icon: 'cluster-o' },
-]);
+const s = computed(() => dash.value.stats || {});
+const statItems = computed(() => {
+  if (auth.isAdmin) {
+    return [
+      { label: '本周课时', value: s.value.week_lessons ?? 0 },
+      { label: '班级数量', value: s.value.class_count ?? 0 },
+      { label: '待处理申请', value: s.value.pending_requests ?? 0 },
+    ];
+  }
+  if (auth.canTeach) {
+    return [
+      { label: '本周课时', value: s.value.week_lessons ?? 0 },
+      { label: '学生人数', value: s.value.student_count ?? 0 },
+      { label: '本月课酬', value: `${s.value.month_income ?? 0} 元` },
+      { label: '待处理申请', value: s.value.pending_requests ?? 0, warn: (s.value.pending_requests ?? 0) > 0 },
+    ];
+  }
+  return [
+    { label: '本周课时', value: s.value.week_lessons ?? 0 },
+    { label: '已加入班级', value: s.value.class_count ?? 0 },
+    { label: '待审申请', value: s.value.my_pending ?? 0 },
+  ];
+});
 </script>
 
 <template>
@@ -36,16 +50,35 @@ const statItems = computed(() => [
     <template v-if="!isDesktop">
       <header class="hero">
         <div class="hero-greeting">{{ greeting() }}，{{ auth.user?.name }}</div>
-        <div class="hero-sub">{{ cnDate(dash.today) }} · 本周 {{ dash.stats.week_lessons ?? 0 }} 节课</div>
+        <div class="hero-sub">
+          {{ cnDate(dash.today) }} · 本周 {{ s.week_lessons ?? 0 }} 节课
+          <template v-if="auth.canTeach"> · 已完成 {{ s.month_done_lessons ?? 0 }} 节</template>
+        </div>
       </header>
 
       <div class="card stats hero-overlap">
         <div style="display: flex; text-align: center">
-          <div v-for="s in statItems" :key="s.label" style="flex: 1">
-            <div class="stat-num">{{ s.value }}</div>
-            <div class="stat-label">{{ s.label }}</div>
+          <div v-for="i in statItems" :key="i.label" style="flex: 1">
+            <div class="stat-num" :style="i.warn ? { color: '#e07a00' } : {}">{{ i.value }}</div>
+            <div class="stat-label">{{ i.label }}</div>
           </div>
         </div>
+      </div>
+
+      <!-- 待办提醒：点击直达 -->
+      <div
+        v-if="(auth.canTeach && s.pending_requests) || (!auth.canTeach && s.my_pending)"
+        class="card todo-card"
+        @click="router.push('/requests')"
+      >
+        <van-icon name="todo-list-o" size="20" color="#e07a00" />
+        <div style="flex: 1; margin-left: 10px">
+          <div style="font-size: 14px; font-weight: 600">
+            {{ auth.canTeach ? `有 ${s.pending_requests} 条申请等待你处理` : `你有 ${s.my_pending} 条申请在审核中` }}
+          </div>
+          <div class="muted">点击查看请假与预约{{ auth.canTeach ? '审批' : '进度' }}</div>
+        </div>
+        <van-icon name="arrow" color="#c3c9d6" />
       </div>
     </template>
 
@@ -63,12 +96,12 @@ const statItems = computed(() => [
       </div>
 
       <div class="grid-3">
-        <div v-for="s in statItems" :key="s.label" class="stat-card">
+        <div v-for="i in statItems" :key="i.label" class="stat-card">
           <div style="display: flex; align-items: center; gap: 10px">
-            <van-icon :name="s.icon" size="20" color="#4f6ef2" />
+            <van-icon name="chart-trending-o" size="20" color="#4f6ef2" />
             <div>
-              <div class="stat-num">{{ s.value }}</div>
-              <div class="stat-label">{{ s.label }}</div>
+              <div class="stat-num" :style="i.warn ? { color: '#e07a00' } : {}">{{ i.value }}</div>
+              <div class="stat-label">{{ i.label }}</div>
             </div>
           </div>
         </div>
@@ -90,3 +123,12 @@ const statItems = computed(() => [
     </div>
   </div>
 </template>
+
+<style scoped>
+.todo-card {
+  display: flex;
+  align-items: center;
+  border-left: 3px solid #ffb35c;
+  cursor: pointer;
+}
+</style>

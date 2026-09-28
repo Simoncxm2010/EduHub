@@ -6,7 +6,7 @@ import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import Modal from '../../ui/Modal.vue';
 import PhotoField from '../../components/PhotoField.vue';
-import { addDays, cnDate, endTime, fmtDate, LESSON_STATUS, BADGE } from '../../utils';
+import { addDays, endTime, fmtDate, LESSON_STATUS, BADGE } from '../../utils';
 
 const route = useRoute();
 const router = useRouter();
@@ -28,13 +28,51 @@ const showSettings = ref(false);
 const settings = ref({ name: '', subject: '', description: '', rate: 0 });
 const busy = ref(false);
 
+/* 收费结算（按学生月度统计） */
+const billMonth = ref(todayStr.slice(0, 7));
+const billing = ref(null);
+const billingLoading = ref(false);
+
+function monthRange(m) {
+  const [y, mo] = m.split('-').map(Number);
+  const last = new Date(y, mo, 0).getDate();
+  return [`${m}-01`, `${m}-${String(last).padStart(2, '0')}`];
+}
+
+async function loadBilling() {
+  billingLoading.value = true;
+  try {
+    const [from, to] = monthRange(billMonth.value);
+    billing.value = await api.get(`/classes/${classId}/billing`, { params: { from, to } });
+  } catch (e) {
+    toastError(e);
+    billing.value = null;
+  } finally {
+    billingLoading.value = false;
+  }
+}
+
+async function exportBilling() {
+  try {
+    const [from, to] = monthRange(billMonth.value);
+    const blob = await api.get(`/classes/${classId}/billing/export`, { params: { from, to }, responseType: 'blob' });
+    saveBlob(blob, `${info.value.class.name}-收费结算-${billMonth.value}.csv`);
+    showToast({ type: 'success', message: '结算单已导出' });
+  } catch (e) {
+    toastError(e);
+  }
+}
+
 async function load() {
   loading.value = true;
   try {
     info.value = await api.get(`/classes/${classId}`);
     const d = await api.get('/lessons', { params: { from: addDays(todayStr, -30), to: addDays(todayStr, 60), class_id: classId } });
     lessons.value = d.lessons;
-    if (auth.canTeach || auth.isAdmin) stats.value = await api.get(`/classes/${classId}/stats`);
+    if (auth.canTeach || auth.isAdmin) {
+      stats.value = await api.get(`/classes/${classId}/stats`);
+      loadBilling();
+    }
     settings.value = {
       name: info.value.class.name,
       subject: info.value.class.subject,
@@ -50,9 +88,11 @@ async function load() {
 onMounted(load);
 
 async function copyCode() {
+  // 老师实际是在微信里发链接，学生打开注册页自动带码进班
+  const link = `${location.origin}/register?invite=${info.value.class.invite_code}`;
   try {
-    await navigator.clipboard.writeText(info.value.class.invite_code);
-    showToast({ type: 'success', message: '邀请码已复制' });
+    await navigator.clipboard.writeText(`邀请你加入「${info.value.class.name}」，注册后自动进班：${link}`);
+    showToast({ type: 'success', message: '邀请链接已复制，发给学生即可' });
   } catch {
     showToast(`邀请码：${info.value.class.invite_code}`);
   }
@@ -227,8 +267,7 @@ function statusOf(l) {
             <div class="d-card-title">
               <span>出勤统计</span>
               <span class="d-badge mute">按已记录的 {{ stats.total_lessons }} 节课</span>
-            </div>
-            <div class="d-scroll">
+            </div>            <div class="d-scroll">
               <table class="d-table">
                 <thead>
                   <tr>
@@ -261,6 +300,54 @@ function statusOf(l) {
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+
+
+          <div v-if="billing" class="d-card">
+            <div class="d-card-title">
+              <span>收费结算</span>
+              <div class="d-inline" style="gap: 8px">
+                <input v-model="billMonth" type="month" class="d-input" style="width: 150px" @change="loadBilling" />
+                <button class="d-btn sm" :disabled="billingLoading" @click="loadBilling">刷新</button>
+                <button class="d-btn sm primary" @click="exportBilling">导出结算单 CSV</button>
+              </div>
+            </div>
+            <div class="d-toolbar" style="margin-bottom: 10px">
+              <span class="d-badge info">{{ billing.range[0] }} 至 {{ billing.range[1] }}</span>
+              <span class="d-badge mute">课次 {{ billing.lesson_count }}（已完成 {{ billing.done_lesson_count }}）</span>
+              <span class="d-badge ok">合计应收 {{ billing.total_amount }} 元</span>
+              <span v-if="!billing.class.rate" class="d-badge warn">未设置单节课酬，先在「班级设置」里填写</span>
+            </div>
+            <div v-if="!billing.stats.length" class="d-empty"><strong>班级还没有学生</strong></div>
+            <div v-else class="d-scroll">
+              <table class="d-table">
+                <thead>
+                  <tr>
+                    <th>学生</th>
+                    <th class="center">时段课次</th>
+                    <th class="center">出勤</th>
+                    <th class="center">请假</th>
+                    <th class="center">缺勤</th>
+                    <th class="center">未记录</th>
+                    <th class="num">应收金额</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="s in billing.stats" :key="s.id">
+                    <td class="strong">{{ s.name }}<span v-if="s.remark" style="color: #98a1b5; font-weight: 400">（{{ s.remark }}）</span></td>
+                    <td class="center">{{ s.unmarked + s.marked }}</td>
+                    <td class="center">{{ s.attended }}<span v-if="s.late" style="color: #ff976a">（含迟到 {{ s.late }}）</span></td>
+                    <td class="center">{{ s.leave }}</td>
+                    <td class="center">{{ s.absent }}</td>
+                    <td class="center">{{ s.unmarked }}</td>
+                    <td class="num strong">{{ s.amount }} 元</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div style="font-size: 12px; color: #98a1b5; margin-top: 10px">
+              计费口径：出勤与迟到计费，请假与缺勤不计费；金额只按已记录的考勤统计。
             </div>
           </div>
 
@@ -304,7 +391,7 @@ function statusOf(l) {
               {{ info.class.invite_code }}
             </div>
             <div style="font-size: 12.5px; color: #98a1b5; text-align: center">
-              学生注册后，在「班级」页输入邀请码即可加入
+              复制链接发给学生，注册后自动加入本班
             </div>
           </div>
 

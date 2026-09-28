@@ -3,6 +3,7 @@ import { db, today } from '../db.js';
 import { authRequired, teacherOnly, roleAtLeast } from '../middleware.js';
 import { h, ApiError, isDate, isTime, nowStamp, toMin, minToTime } from '../util.js';
 import { findConflicts, conflictText } from '../conflicts.js';
+import { notify } from './notifications.js';
 
 const router = Router();
 router.use(authRequired);
@@ -158,6 +159,14 @@ router.post('/', h(async (req, res) => {
   );
 
   res.status(201).json({ request: requestRow(r.lastInsertRowid), conflict_note: conflictNote });
+
+  // 提交后提醒老师（放在响应之后发，失败也不影响提交）
+  notify(
+    cls.teacher_id,
+    kind === 'leave' ? '新请假申请' : '新预约申请',
+    `${student.name}：${kind === 'leave' ? `申请 ${wantLesson.date} ${wantLesson.start_time} 请假` : `预约 ${b.date} ${b.start_time}${conflictNote ? `（注意：${conflictNote}）` : ''}`}`,
+    '/requests'
+  );
 }));
 
 /** 学生撤销自己待处理的申请 */
@@ -227,6 +236,19 @@ router.put('/:id/approve', h(async (req, res) => {
   }
 
   res.json({ request: requestRow(row.id), lesson_id: createdLessonId });
+
+  // 审批结果通知学生（有绑定账号才发）
+  const stu = db.prepare('SELECT user_id, name FROM students WHERE id = ?').get(row.student_id);
+  if (stu?.user_id) {
+    notify(
+      stu.user_id,
+      row.kind === 'leave' ? '请假申请已通过' : '预约已通过',
+      row.kind === 'leave'
+        ? `你 ${row.date} ${row.start_time} 的请假已通过${note ? `：${note}` : ''}`
+        : `你预约的 ${row.date} ${row.start_time} 已排课${note ? `：${note}` : ''}`,
+      '/schedule'
+    );
+  }
 }));
 
 /** 审批：驳回 */
@@ -241,6 +263,16 @@ router.put('/:id/reject', h(async (req, res) => {
     UPDATE requests SET status = 'rejected', decided_note = ?, decided_by = ?, decided_at = ? WHERE id = ?
   `).run(String(req.body?.note || '').slice(0, 200), req.user.id, nowStamp(), row.id);
   res.json({ request: requestRow(row.id) });
+
+  const stu = db.prepare('SELECT user_id FROM students WHERE id = ?').get(row.student_id);
+  if (stu?.user_id) {
+    notify(
+      stu.user_id,
+      row.kind === 'leave' ? '请假申请被驳回' : '预约被驳回',
+      `你 ${row.date} ${row.start_time} 的申请未通过${req.body?.note ? `：${req.body.note}` : ''}`,
+      '/requests'
+    );
+  }
 }));
 
 /** 我提交过的申请汇总（学生自己的请假/缺勤情况） */

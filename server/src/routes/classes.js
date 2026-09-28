@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { db, today } from '../db.js';
 import { authRequired, teacherOnly, studentOnly, assertClassAccess, roleAtLeast } from '../middleware.js';
-import { h, ApiError, genInviteCode, pickColor } from '../util.js';
+import { h, ApiError, genInviteCode, pickColor, csvCell } from '../util.js';
 
 const router = Router();
 router.use(authRequired);
@@ -138,6 +138,110 @@ router.get('/:id/stats', teacherOnly, h(async (req, res) => {
   }).sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1) || a.name.localeCompare(b.name, 'zh'));
 
   res.json({ total_lessons: totalLessons, stats });
+}));
+
+/** 按学生收费统计：某段时间内每个学生的出勤/请假/缺勤与应收金额 */
+router.get('/:id/billing', teacherOnly, h(async (req, res) => {
+  const cls = assertClassAccess(req.user, Number(req.params.id));
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from)) ? req.query.from : null;
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to)) ? req.query.to : null;
+  if (!from || !to || from > to) throw new ApiError(400, '请提供有效的 from/to 日期范围');
+
+  // 计费口径：出勤（含迟到）才算钱；请假/缺勤不计费（机构普遍做法，缺勤也可在导出后手工调整）
+  const students = db.prepare('SELECT id, name, phone, remark FROM students WHERE class_id = ? ORDER BY created_at, id').all(cls.id);
+  const lessonRows = db.prepare(`
+    SELECT l.id, l.date, l.start_time, l.duration_min, l.status FROM lessons l
+    WHERE l.class_id = ? AND l.date BETWEEN ? AND ? AND l.status != 'canceled'
+    ORDER BY l.date, l.start_time
+  `).all(cls.id, from, to);
+
+  const marks = db.prepare(`
+    SELECT a.lesson_id, a.student_id, a.status FROM attendance a
+    JOIN lessons l ON l.id = a.lesson_id
+    WHERE l.class_id = ? AND l.date BETWEEN ? AND ? AND l.status != 'canceled'
+  `).all(cls.id, from, to);
+
+  const byStudent = new Map();
+  for (const m of marks) {
+    const t = byStudent.get(m.student_id) || { attended: 0, late: 0, leave: 0, absent: 0, unmarked: 0 };
+    if (m.status === 'present') t.attended += 1;
+    else if (m.status === 'late') { t.attended += 1; t.late += 1; }
+    else if (m.status === 'leave') t.leave += 1;
+    else if (m.status === 'absent') t.absent += 1;
+    byStudent.set(m.student_id, t);
+  }
+
+  const rate = Number(cls.rate) || 0;
+  const stats = students.map((s) => {
+    const t = byStudent.get(s.id) || { attended: 0, late: 0, leave: 0, absent: 0, unmarked: 0 };
+    const marked = t.attended + t.leave + t.absent;
+    return {
+      ...s,
+      ...t,
+      marked,
+      unmarked: lessonRows.length - marked,
+      amount: Math.round(t.attended * rate * 100) / 100,
+    };
+  }).sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name, 'zh'));
+
+  res.json({
+    class: { id: cls.id, name: cls.name, rate },
+    range: [from, to],
+    lesson_count: lessonRows.length,
+    // 只统计已上完的课参与计费，未上的课不计
+    done_lesson_count: lessonRows.filter((l) => l.status === 'done').length,
+    total_amount: Math.round(stats.reduce((n, s) => n + s.amount, 0) * 100) / 100,
+    stats,
+  });
+}));
+
+/** 结算单 CSV 导出（带 BOM，Excel 直接打开） */
+router.get('/:id/billing/export', teacherOnly, h(async (req, res) => {
+  const cls = assertClassAccess(req.user, Number(req.params.id));
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from)) ? req.query.from : null;
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to)) ? req.query.to : null;
+  if (!from || !to || from > to) throw new ApiError(400, '请提供有效的 from/to 日期范围');
+
+  const rate = Number(cls.rate) || 0;
+  const students = db.prepare('SELECT id, name, phone FROM students WHERE class_id = ? ORDER BY created_at, id').all(cls.id);
+  const lessonRows = db.prepare(`
+    SELECT id, status FROM lessons l WHERE l.class_id = ? AND l.date BETWEEN ? AND ? AND l.status != 'canceled'
+  `).all(cls.id, from, to);
+  const marks = db.prepare(`
+    SELECT a.student_id, a.status FROM attendance a
+    JOIN lessons l ON l.id = a.lesson_id
+    WHERE l.class_id = ? AND l.date BETWEEN ? AND ? AND l.status != 'canceled'
+  `).all(cls.id, from, to);
+
+  const byStudent = new Map();
+  for (const m of marks) {
+    const t = byStudent.get(m.student_id) || { attended: 0, leave: 0, absent: 0 };
+    if (m.status === 'present' || m.status === 'late') t.attended += 1;
+    else if (m.status === 'leave') t.leave += 1;
+    else if (m.status === 'absent') t.absent += 1;
+    byStudent.set(m.student_id, t);
+  }
+
+  const esc = csvCell;
+  const lines = [
+    ['学生', '手机号', '时段课次', '出勤', '请假', '缺勤', '未记录', '单节费用', '应收金额'].map(esc).join(','),
+  ];
+  let total = 0;
+  for (const s of students) {
+    const t = byStudent.get(s.id) || { attended: 0, leave: 0, absent: 0 };
+    const amount = Math.round(t.attended * rate * 100) / 100;
+    total += amount;
+    lines.push([
+      s.name, s.phone || '', lessonRows.length, t.attended, t.leave, t.absent,
+      lessonRows.length - t.attended - t.leave - t.absent,
+      rate, amount,
+    ].map(esc).join(','));
+  }
+  lines.push(['合计', '', '', '', '', '', '', '', Math.round(total * 100) / 100].map(esc).join(','));
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="eduhub-billing.csv"; filename*=UTF-8''${encodeURIComponent(`${cls.name}-收费结算-${from}_${to}.csv`)}`);
+  res.send('\uFEFF' + lines.join('\r\n'));
 }));
 
 export default router;

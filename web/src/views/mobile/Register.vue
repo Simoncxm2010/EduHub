@@ -1,17 +1,20 @@
 <script setup>
 import { ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { showToast } from 'vant';
+import api from '../../api';
 import { useAuthStore } from '../../store';
 import { isDesktop } from '../../composables/layout';
 
 const router = useRouter();
+const route = useRoute();
 const auth = useAuthStore();
 
 const name = ref('');
 const phone = ref('');
 const password = ref('');
 const role = ref('teacher');
+const code = ref(String(route.query.invite || ''));
 const loading = ref(false);
 
 async function submit() {
@@ -21,7 +24,17 @@ async function submit() {
   loading.value = true;
   try {
     await auth.register({ name: name.value.trim(), phone: phone.value.trim(), password: password.value, role: role.value });
-    showToast({ type: 'success', message: '注册成功' });
+    // 带了邀请码就注册后直接进班
+    let joined = '';
+    if (role.value === 'student' && code.value.trim()) {
+      try {
+        const d = await api.post('/classes/join', { invite_code: code.value.trim() });
+        joined = `，已加入「${d.class.name}」`;
+      } catch (e) {
+        showToast(`注册成功，但加入班级失败：${e.message}`);
+      }
+    }
+    showToast({ type: 'success', message: `注册成功${joined}` });
     router.replace('/');
   } catch (e) {
     showToast(e.message);
@@ -77,9 +90,10 @@ async function submit() {
               <van-field v-model="name" label="姓名" placeholder="请输入姓名" clearable />
               <van-field v-model="phone" label="手机号" placeholder="用于登录" clearable />
               <van-field v-model="password" label="密码" type="password" placeholder="至少 6 位" />
+          <van-field v-if="role === 'student'" v-model="code" label="邀请码" placeholder="老师给你的 6 位邀请码（选填）" clearable />
             </van-cell-group>
             <div v-if="role === 'student'" class="muted" style="margin: 10px 20px 0">
-              注册后可在「班级」页输入老师提供的邀请码加入班级。
+              填写邀请码可在注册后自动加入班级；也可以之后再在「班级」页输入。
             </div>
             <div style="margin: 16px">
               <van-button round block type="primary" native-type="submit" :loading="loading">注 册</van-button>

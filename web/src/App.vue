@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showConfirmDialog, showToast } from 'vant';
 import { useAuthStore } from './store';
@@ -22,6 +22,15 @@ const activePath = computed(() => {
   if (route.path.startsWith('/lessons')) return '/schedule';
   return route.path;
 });
+
+// 登录后拉一次未读数，路由切换时刷新（含审批动作后的回跳）
+watch(
+  () => [auth.token, route.path],
+  ([token]) => {
+    if (token && !isPublic.value) auth.fetchUnread();
+  },
+  { immediate: true }
+);
 
 async function logout() {
   try {
@@ -59,6 +68,7 @@ async function logout() {
             <span class="sidebar-item-title">{{ n.text }}</span>
             <span class="sidebar-item-desc">{{ n.desc }}</span>
           </span>
+          <span v-if="n.to === '/notifications' && auth.unread" class="sidebar-badge">{{ auth.unread > 99 ? '99+' : auth.unread }}</span>
         </RouterLink>
       </nav>
 

@@ -129,6 +129,18 @@ CREATE INDEX IF NOT EXISTS idx_availability_user ON availability(user_id);
 CREATE INDEX IF NOT EXISTS idx_requests_teacher ON requests(teacher_id, status);
 CREATE INDEX IF NOT EXISTS idx_requests_student ON requests(student_id, status);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+
+-- 站内通知：申请提交/审批结果等，手动登记的学生没有账号则不发
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  link TEXT NOT NULL DEFAULT '',
+  read INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read);
 `);
 
 /** 老库补列：SQLite 没有 ADD COLUMN IF NOT EXISTS */

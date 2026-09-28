@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue';
 import { showConfirmDialog, showToast } from 'vant';
 import api, { toastError } from '../api';
 import { isDesktop } from '../composables/layout';
-import { addDays, fmtDate, minToTime } from '../utils';
+import { addDays, fmtDate } from '../utils';
 
 /** 新建单节课时：点击日历空档会带日期与时间进来，提交前先做冲突预检 */
 const props = defineProps({

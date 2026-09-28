@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
-import { BADGE, cnDate, endTime, fmtDate, greeting, LESSON_STATUS } from '../../utils';
+import { BADGE, endTime, fmtDate, greeting, LESSON_STATUS } from '../../utils';
 
 const router = useRouter();
 const auth = useAuthStore();

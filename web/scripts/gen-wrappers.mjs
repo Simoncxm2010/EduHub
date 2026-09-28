@@ -4,7 +4,7 @@ import path from 'node:path';
 
 const names = [
   'Dashboard', 'Schedule', 'Classes', 'ClassDetail', 'LessonDetail',
-  'Me', 'Login', 'Register', 'Requests', 'Availability', 'Admin',
+  'Me', 'Login', 'Register', 'Requests', 'Availability', 'Admin', 'Notifications',
 ];
 
 const dir = path.join(import.meta.dirname, '..', 'src', 'views');
