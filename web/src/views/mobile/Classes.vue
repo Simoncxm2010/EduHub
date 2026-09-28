@@ -2,9 +2,9 @@
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { showToast } from 'vant';
-import api, { toastError } from '../api';
-import { useAuthStore } from '../store';
-import { isDesktop } from '../composables/layout';
+import api, { toastError } from '../../api';
+import { useAuthStore } from '../../store';
+import { isDesktop } from '../../composables/layout';
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -74,18 +74,18 @@ async function joinClass() {
         <div>
           <h1>班级</h1>
           <div class="sub">
-            {{ auth.isTeacher ? `共 ${classes.length} 个班级，点击卡片查看学生名单与邀请码` : `已加入 ${classes.length} 个班级` }}
+            {{ auth.canTeach ? `共 ${classes.length} 个班级，点击卡片查看学生名单与邀请码` : `已加入 ${classes.length} 个班级` }}
           </div>
         </div>
         <div class="page-head-actions">
-          <van-button v-if="!auth.isTeacher" round type="primary" icon="plus" @click="showJoin = true">凭邀请码加入</van-button>
-          <van-button v-if="auth.isTeacher" round type="primary" icon="plus" @click="showCreate = true">创建班级</van-button>
+          <van-button v-if="!auth.canTeach" round type="primary" icon="plus" @click="showJoin = true">凭邀请码加入</van-button>
+          <van-button v-if="auth.canTeach" round type="primary" icon="plus" @click="showCreate = true">创建班级</van-button>
         </div>
       </div>
     </template>
     <van-nav-bar v-else title="班级" />
 
-    <div v-if="!isDesktop && !auth.isTeacher" class="card" style="display: flex; align-items: center; gap: 10px">
+    <div v-if="!isDesktop && !auth.canTeach" class="card" style="display: flex; align-items: center; gap: 10px">
       <van-icon name="add-o" size="22" color="#4f6ef2" />
       <div style="flex: 1">
         <div style="font-size: 14px; font-weight: 500">加入新班级</div>
@@ -113,11 +113,11 @@ async function joinClass() {
       <van-empty
         v-if="!classes.length"
         image="search"
-        :description="auth.isTeacher ? '还没有班级，点击下方按钮创建' : '还没有加入任何班级'"
+        :description="auth.canTeach ? '还没有班级，点击下方按钮创建' : '还没有加入任何班级'"
       />
     </template>
 
-    <button v-if="!isDesktop && auth.isTeacher" class="fab" @click="showCreate = true">+</button>
+    <button v-if="!isDesktop && auth.canTeach" class="fab" @click="showCreate = true">+</button>
 
     <van-popup
       v-model:show="showCreate"

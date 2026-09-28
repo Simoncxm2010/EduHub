@@ -61,6 +61,21 @@ export const LESSON_STATUS = {
   canceled: { text: '已取消', color: 'default' },
 };
 
+/** Vant 标签色 -> 桌面端 d-badge 样式名 */
+export const BADGE = { primary: 'info', success: 'ok', warning: 'warn', danger: 'danger', default: 'mute' };
+
+export const REQUEST_STATUS = {
+  pending: { text: '待处理', color: 'warn' },
+  approved: { text: '已通过', color: 'ok' },
+  rejected: { text: '已驳回', color: 'danger' },
+  canceled: { text: '已撤销', color: 'mute' },
+};
+
+export const REQUEST_KIND = {
+  leave: { text: '请假', color: 'warn' },
+  booking: { text: '预约课程', color: 'info' },
+};
+
 export const ATTEND_STATUS = {
   present: { text: '出勤', color: '#07c160' },
   late: { text: '迟到', color: '#ff976a' },

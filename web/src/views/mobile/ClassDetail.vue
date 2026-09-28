@@ -2,11 +2,11 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showConfirmDialog, showToast } from 'vant';
-import api, { toastError } from '../api';
-import { useAuthStore } from '../store';
-import { isDesktop } from '../composables/layout';
-import { addDays, fmtDate } from '../utils';
-import LessonCard from '../components/LessonCard.vue';
+import api, { toastError } from '../../api';
+import { useAuthStore } from '../../store';
+import { isDesktop } from '../../composables/layout';
+import { addDays, fmtDate } from '../../utils';
+import LessonCard from '../../components/LessonCard.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -26,7 +26,7 @@ async function load() {
     const from = fmtDate(new Date());
     const d = await api.get('/lessons', { params: { from, to: addDays(from, 60), class_id: classId } });
     upcoming.value = d.lessons.slice(0, isDesktop.value ? 8 : 5);
-    if (auth.isTeacher) {
+    if (auth.canTeach) {
       stats.value = await api.get(`/classes/${classId}/stats`);
     }
   } catch (e) {
@@ -129,7 +129,7 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
           </div>
           <div v-if="info.class.description" class="card muted">{{ info.class.description }}</div>
 
-          <div v-if="auth.isTeacher" class="card">
+          <div v-if="auth.canTeach" class="card">
             <div style="display: flex; align-items: center; justify-content: space-between">
               <span style="font-size: 14px; font-weight: 600">班级邀请码</span>
               <van-tag plain type="primary" style="cursor: pointer" @click="copyCode">点击复制</van-tag>
@@ -138,7 +138,7 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
             <div class="muted" style="text-align: center">学生注册后，在「班级」页输入邀请码即可加入</div>
           </div>
 
-          <div v-if="auth.isTeacher" class="card">
+          <div v-if="auth.canTeach" class="card">
             <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px">
               <div>
                 <div style="font-size: 14px; font-weight: 600">课时记录导出</div>
@@ -154,7 +154,7 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
         <div class="col">
           <div class="section-head" style="margin-top: 0">
             <span>学生名单</span>
-            <van-tag v-if="auth.isTeacher" plain type="primary" style="cursor: pointer" @click="showAdd = true">+ 添加</van-tag>
+            <van-tag v-if="auth.canTeach" plain type="primary" style="cursor: pointer" @click="showAdd = true">+ 添加</van-tag>
           </div>
           <div class="card card-tight">
             <div v-for="s in info.students" :key="s.id" class="attend-row">
@@ -165,7 +165,7 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
               <div class="attend-actions">
                 <van-tag v-if="s.user_id" plain type="success">已绑定账号</van-tag>
                 <span v-else class="muted">未绑定</span>
-                <van-icon v-if="auth.isTeacher" name="delete-o" color="#ee0a24" size="18" style="cursor: pointer" @click="removeStudent(s)" />
+                <van-icon v-if="auth.canTeach" name="delete-o" color="#ee0a24" size="18" style="cursor: pointer" @click="removeStudent(s)" />
               </div>
             </div>
             <van-empty v-if="!info.students.length" image="search" description="暂无学生" style="padding: 20px 0" />
@@ -173,7 +173,7 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
         </div>
       </div>
 
-      <template v-if="auth.isTeacher && stats">
+      <template v-if="auth.canTeach && stats">
         <div class="section-head">
           <span>出勤统计</span>
           <span class="muted">按已记录的 {{ stats.total_lessons }} 节课统计</span>

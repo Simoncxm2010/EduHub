@@ -8,6 +8,12 @@ export const useAuthStore = defineStore('auth', {
   }),
   getters: {
     isTeacher: (s) => s.user?.role === 'teacher',
+    isStudent: (s) => s.user?.role === 'student',
+    isAdmin: (s) => s.user?.role === 'admin' || s.user?.role === 'super',
+    isSuper: (s) => s.user?.role === 'super',
+    /** 能否做教学类操作：教师及以上（管理员/超管常也代课） */
+    canTeach: (s) => ['teacher', 'admin', 'super'].includes(s.user?.role),
+    roleLabel: (s) => ({ student: '学生', teacher: '教师', admin: '管理员', super: '超级管理员' }[s.user?.role] || s.user?.role),
   },
   actions: {
     setAuth(token, user) {

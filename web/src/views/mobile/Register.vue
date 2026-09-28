@@ -2,8 +2,8 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { showToast } from 'vant';
-import { useAuthStore } from '../store';
-import { isDesktop } from '../composables/layout';
+import { useAuthStore } from '../../store';
+import { isDesktop } from '../../composables/layout';
 
 const router = useRouter();
 const auth = useAuthStore();

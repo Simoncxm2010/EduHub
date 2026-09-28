@@ -9,6 +9,9 @@ const routes = [
   { path: '/classes', component: () => import('./views/Classes.vue') },
   { path: '/classes/:id', component: () => import('./views/ClassDetail.vue') },
   { path: '/lessons/:id', component: () => import('./views/LessonDetail.vue') },
+  { path: '/requests', component: () => import('./views/Requests.vue') },
+  { path: '/availability', component: () => import('./views/Availability.vue') },
+  { path: '/admin', component: () => import('./views/Admin.vue'), meta: { admin: true } },
   { path: '/me', component: () => import('./views/Me.vue') },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ];
@@ -40,6 +43,8 @@ router.beforeEach(async (to) => {
       return '/login';
     }
   }
+  // 管理后台仅管理员及以上可进
+  if (to.meta.admin && !auth.isAdmin) return '/';
   return true;
 });
 

@@ -2,13 +2,13 @@
 import { computed, nextTick, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showConfirmDialog, showImagePreview, showToast } from 'vant';
-import api, { toastError } from '../api';
-import { useAuthStore } from '../store';
-import { isDesktop } from '../composables/layout';
-import { ATTEND_STATUS, cnDate, endTime, fmtDate, LESSON_STATUS } from '../utils';
-import { uploadImage } from '../utils/image';
-import SignaturePad from '../components/SignaturePad.vue';
-import PhotoField from '../components/PhotoField.vue';
+import api, { toastError } from '../../api';
+import { useAuthStore } from '../../store';
+import { isDesktop } from '../../composables/layout';
+import { ATTEND_STATUS, cnDate, endTime, fmtDate, LESSON_STATUS } from '../../utils';
+import { uploadImage } from '../../utils/image';
+import SignaturePad from '../../components/SignaturePad.vue';
+import PhotoField from '../../components/PhotoField.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -58,7 +58,7 @@ const statusCfg = computed(() => LESSON_STATUS[detail.value?.lesson.status || 's
 const checkedCount = computed(() => Object.values(attendMap).filter((s) => s === 'present' || s === 'late').length);
 const signedCount = computed(() => Object.values(signMap).filter(Boolean).length);
 const myStudent = computed(() => {
-  if (!auth.user || auth.isTeacher || !detail.value) return null;
+  if (!auth.user || auth.canTeach || !detail.value) return null;
   return detail.value.students.find((s) => s.user_id === auth.user.id) || null;
 });
 const myAttendance = computed(() => (myStudent.value ? attendMap[myStudent.value.id] : undefined));
@@ -183,6 +183,28 @@ async function submitSelf() {
   }
 }
 
+/* ---------------- 学生：请假申请 ---------------- */
+const leave = reactive({ show: false, reason: '', saving: false });
+const lessonCanceled = computed(() => detail.value?.lesson.status === 'canceled');
+
+function openLeave() {
+  leave.reason = '';
+  leave.show = true;
+}
+
+async function submitLeave() {
+  leave.saving = true;
+  try {
+    await api.post('/requests', { kind: 'leave', lesson_id: lessonId, reason: leave.reason });
+    showToast({ type: 'success', message: '请假申请已提交，等待老师处理' });
+    leave.show = false;
+  } catch (e) {
+    toastError(e);
+  } finally {
+    leave.saving = false;
+  }
+}
+
 /* ---------------- 课堂记录 ---------------- */
 async function saveRecord() {
   savingRecord.value = true;
@@ -272,7 +294,7 @@ function preview(url) {
         </div>
         <div v-if="detail.lesson.topic" class="lesson-topic">{{ detail.lesson.topic }}</div>
 
-        <div v-if="auth.isTeacher" class="lesson-tools">
+        <div v-if="auth.canTeach" class="lesson-tools">
           <van-button
             v-if="detail.lesson.status !== 'done'"
             size="small" round type="success" plain icon="passed"
@@ -293,7 +315,7 @@ function preview(url) {
       <div class="lesson-detail">
         <!-- 主栏：留痕 + 课堂记录 -->
         <div class="col col-main">
-          <template v-if="auth.isTeacher">
+          <template v-if="auth.canTeach">
             <div class="section-head">
               <span>签到留痕</span>
               <span v-if="savingTrace" class="muted">保存中…</span>
@@ -342,7 +364,7 @@ function preview(url) {
             <span v-if="detail.record" class="muted">更新于 {{ detail.record.updated_at?.slice(0, 16) }}</span>
           </div>
           <div class="card">
-            <template v-if="auth.isTeacher">
+            <template v-if="auth.canTeach">
               <van-field
                 v-model="record.content" type="textarea" rows="4" autosize
                 placeholder="本节课讲了什么？" @update:model-value="recordDirty = true"
@@ -368,7 +390,7 @@ function preview(url) {
 
         <!-- 签到栏 -->
         <div class="col col-attend">
-          <template v-if="auth.isTeacher">
+          <template v-if="auth.canTeach">
             <div class="section-head">
               <span>签到</span>
               <span class="muted">已到 {{ checkedCount }}/{{ detail.students.length }} · 已签 {{ signedCount }}</span>
@@ -454,6 +476,12 @@ function preview(url) {
                 <van-button round block type="primary" icon="photograph" @click="openSelf">拍照 + 签名签到</van-button>
               </template>
               <van-empty v-else image="search" description="你不在本节课的班级中" style="padding: 14px 0" />
+
+              <div v-if="myStudent" style="margin-top: 12px">
+                <van-button round block plain icon="todo-list-o" :disabled="lessonCanceled" @click="openLeave">
+                  {{ lessonCanceled ? '本节课已取消，无需请假' : '这节课来不了？提交请假申请' }}
+                </van-button>
+              </div>
             </div>
 
             <div class="section-head">

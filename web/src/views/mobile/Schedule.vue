@@ -1,16 +1,16 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import api, { toastError } from '../api';
-import { useAuthStore } from '../store';
-import { isDesktop } from '../composables/layout';
+import api, { toastError } from '../../api';
+import { useAuthStore } from '../../store';
+import { isDesktop } from '../../composables/layout';
 import {
   addDays, cnDate, fmtDate, monthStartOf, nowMinutes, weekStartOf, WEEKDAY_SHORT,
-} from '../utils';
-import LessonCard from '../components/LessonCard.vue';
-import WeekGrid from '../components/WeekGrid.vue';
-import MonthGrid from '../components/MonthGrid.vue';
-import LessonFormDialog from '../components/LessonFormDialog.vue';
-import SmartPlanDialog from '../components/SmartPlanDialog.vue';
+} from '../../utils';
+import LessonCard from '../../components/LessonCard.vue';
+import WeekGrid from '../../components/WeekGrid.vue';
+import MonthGrid from '../../components/MonthGrid.vue';
+import LessonFormDialog from '../../components/LessonFormDialog.vue';
+import SmartPlanDialog from '../../components/SmartPlanDialog.vue';
 
 const auth = useAuthStore();
 const todayStr = fmtDate(new Date());
@@ -199,8 +199,8 @@ async function onCreated(d) {
           <van-button round plain icon="arrow-left" @click="shift(-1)">{{ viewMode === 'week' ? '上一周' : '上一月' }}</van-button>
           <van-button round plain @click="goToday">今天</van-button>
           <van-button round plain icon="arrow" @click="shift(1)">{{ viewMode === 'week' ? '下一周' : '下一月' }}</van-button>
-          <van-button v-if="auth.isTeacher" round plain type="primary" icon="bulb-o" @click="openSmart">智能排课</van-button>
-          <van-button v-if="auth.isTeacher" round type="primary" icon="plus" @click="openForm()">新建排课</van-button>
+          <van-button v-if="auth.canTeach" round plain type="primary" icon="bulb-o" @click="openSmart">智能排课</van-button>
+          <van-button v-if="auth.canTeach" round type="primary" icon="plus" @click="openForm()">新建排课</van-button>
         </div>
       </div>
 
@@ -226,7 +226,7 @@ async function onCreated(d) {
           :lessons-by-date="lessons"
           :now-minute="nowMinuteForGrid"
           @select="(l) => $router.push(`/lessons/${l.id}`)"
-          @create="(p) => auth.isTeacher && openForm(p)"
+          @create="(p) => auth.canTeach && openForm(p)"
         />
         <MonthGrid
           v-else
@@ -236,10 +236,10 @@ async function onCreated(d) {
         />
         <div class="muted" style="margin-top: 10px">
           <template v-if="viewMode === 'week'">
-            {{ auth.isTeacher ? '鼠标移到空白时段会显示将要排课的时间，点击即可按该时间排课；点击课程块查看签到与记录。' : '点击课程块查看签到与课堂记录。' }}
+            {{ auth.canTeach ? '鼠标移到空白时段会显示将要排课的时间，点击即可按该时间排课；点击课程块查看签到与记录。' : '点击课程块查看签到与课堂记录。' }}
           </template>
           <template v-else>
-            {{ auth.isTeacher ? '点击某一天可切到周视图并直接排课。' : '点击某一天查看当天课程。' }}
+            {{ auth.canTeach ? '点击某一天可切到周视图并直接排课。' : '点击某一天查看当天课程。' }}
           </template>
         </div>
       </template>
@@ -316,7 +316,7 @@ async function onCreated(d) {
         </div>
       </template>
 
-      <div v-if="auth.isTeacher" class="fab-group">
+      <div v-if="auth.canTeach" class="fab-group">
         <button class="fab fab-minor" title="智能排课" @click="openSmart">
           <van-icon name="bulb-o" size="20" />
         </button>
