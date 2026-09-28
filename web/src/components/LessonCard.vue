@@ -10,6 +10,7 @@ const props = defineProps({
 
 const router = useRouter();
 const status = computed(() => LESSON_STATUS[props.lesson.status] || LESSON_STATUS.scheduled);
+const signedCount = computed(() => Number(props.lesson.signed_count || 0));
 
 function open() {
   router.push(`/lessons/${props.lesson.id}`);
@@ -33,6 +34,12 @@ function open() {
       <span v-if="lesson.room"><van-icon name="location-o" /> {{ lesson.room }}</span>
       <span v-if="lesson.checked_count != null && lesson.student_count != null">
         <van-icon name="user-o" /> 签到 {{ lesson.checked_count }}/{{ lesson.student_count }}
+      </span>
+      <span v-if="signedCount" class="trace-badges">
+        <van-icon name="edit" /> 签名 {{ signedCount }}
+      </span>
+      <span v-if="lesson.has_checkin" class="trace-badges">
+        <van-icon name="photograph" /> 已留痕
       </span>
     </div>
     <div v-if="lesson.topic" class="lesson-topic">{{ lesson.topic }}</div>

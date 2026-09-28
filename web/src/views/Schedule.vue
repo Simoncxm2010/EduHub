@@ -3,9 +3,10 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { showToast } from 'vant';
 import api, { toastError } from '../api';
 import { useAuthStore } from '../store';
-import { addDays, cnDate, fmtDate, weekStartOf } from '../utils';
+import { isDesktop } from '../composables/layout';
+import { addDays, cnDate, fmtDate, weekStartOf, WEEKDAY_CN } from '../utils';
 import LessonCard from '../components/LessonCard.vue';
-import TabBar from '../components/TabBar.vue';
+import WeekGrid from '../components/WeekGrid.vue';
 
 const auth = useAuthStore();
 const todayStr = fmtDate(new Date());
@@ -21,16 +22,19 @@ const weekDays = computed(() => {
   for (let i = 0; i < 7; i++) {
     const d = addDays(weekStart.value, i);
     const dt = new Date(`${d}T00:00:00`);
-    out.push({ date: d, num: dt.getDate(), dow: '一二三四五六日'[(dt.getDay() + 6) % 7] });
+    out.push({
+      date: d,
+      num: dt.getDate(),
+      dow: WEEKDAY_CN[dt.getDay()],
+      dowShort: '一二三四五六日'[(dt.getDay() + 6) % 7],
+      isToday: d === todayStr,
+    });
   }
   return out;
 });
 const dayLessons = computed(() => lessons.value[selected.value] || []);
 const rangeLabel = computed(() => `${weekStart.value.slice(5).replace('-', '/')} - ${weekEnd.value.slice(5).replace('-', '/')}`);
-
-function hasLessons(d) {
-  return (lessons.value[d] || []).length > 0;
-}
+const weekLessonCount = computed(() => Object.values(lessons.value).reduce((n, list) => n + list.length, 0));
 
 function shiftWeek(n) {
   anchor.value = addDays(weekStart.value, n * 7);
@@ -74,7 +78,7 @@ const minuteCol = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2,
 const timeColumns = [{ values: [...hourCol] }, { values: [...minuteCol] }];
 const durationOptions = [30, 40, 45, 60, 75, 90, 120, 180].map((v) => ({ text: `${v} 分钟`, value: v }));
 
-async function openForm() {
+async function openForm(date) {
   if (!classes.value.length) {
     try {
       const d = await api.get('/classes');
@@ -85,7 +89,7 @@ async function openForm() {
     }
     if (!classes.value.length) return showToast('请先在「班级」页创建班级');
   }
-  form.date = selected.value || todayStr;
+  form.date = date || selected.value || todayStr;
   form.start_time = form.start_time || '18:00';
   showForm.value = true;
 }
@@ -122,7 +126,7 @@ async function submitForm() {
     showForm.value = false;
     anchor.value = form.date;
     selected.value = form.date;
-    load();
+    await load();
   } catch (e) {
     toastError(e);
   } finally {
@@ -133,43 +137,81 @@ async function submitForm() {
 
 <template>
   <div class="page">
-    <van-nav-bar title="排课" />
-
-    <div class="card">
-      <div class="week-nav">
-        <van-icon name="arrow-left" @click="shiftWeek(-1)" />
-        <span class="title" @click="goToday">{{ rangeLabel }}</span>
-        <van-icon name="arrow" @click="shiftWeek(1)" />
-      </div>
-      <div class="week-days">
-        <div
-          v-for="d in weekDays"
-          :key="d.date"
-          class="day"
-          :class="{ sel: d.date === selected, today: d.date === todayStr }"
-          @click="selected = d.date"
-        >
-          <div class="dow">{{ d.dow }}</div>
-          <div class="num">{{ d.num }}</div>
-          <div v-if="hasLessons(d.date)" class="dot" />
+    <!-- ============ 桌面端：周日历 ============ -->
+    <template v-if="isDesktop">
+      <div class="page-head">
+        <div>
+          <h1>排课</h1>
+          <div class="sub">{{ weekStart }} 至 {{ weekEnd }} · 本周 {{ weekLessonCount }} 节课</div>
+        </div>
+        <div class="page-head-actions">
+          <van-button round plain icon="arrow-left" @click="shiftWeek(-1)">上一周</van-button>
+          <van-button round plain @click="goToday">本周</van-button>
+          <van-button round plain icon="arrow" @click="shiftWeek(1)">下一周</van-button>
+          <van-button v-if="auth.isTeacher" round type="primary" icon="plus" @click="openForm()">新建排课</van-button>
         </div>
       </div>
-    </div>
 
-    <div class="section-head">
-      <span>{{ selected === todayStr ? '今日课程' : cnDate(selected) }}</span>
-      <span class="muted">共 {{ dayLessons.length }} 节</span>
-    </div>
-    <van-loading v-if="loading" style="margin: 30px auto" vertical>加载中…</van-loading>
-    <template v-else>
-      <LessonCard v-for="l in dayLessons" :key="l.id" :lesson="l" />
-      <van-empty v-if="!dayLessons.length" image="search" description="这一天没有课程" />
+      <van-loading v-if="loading" style="margin: 40px auto" vertical>加载中…</van-loading>
+      <template v-else>
+        <WeekGrid
+          :days="weekDays"
+          :lessons-by-date="lessons"
+          @select="(l) => $router.push(`/lessons/${l.id}`)"
+          @create="(date) => auth.isTeacher && openForm(date)"
+        />
+        <div class="muted" style="margin-top: 10px">
+          {{ auth.isTeacher ? '点击空白时段可直接在该日排课；点击课程块查看签到与记录。' : '点击课程块查看签到与课堂记录。' }}
+        </div>
+      </template>
     </template>
 
-    <button v-if="auth.isTeacher" class="fab" @click="openForm">+</button>
+    <!-- ============ 移动端：周条 + 当日列表 ============ -->
+    <template v-else>
+      <van-nav-bar title="排课" />
+
+      <div class="card">
+        <div class="week-nav">
+          <van-icon name="arrow-left" @click="shiftWeek(-1)" />
+          <span class="title" @click="goToday">{{ rangeLabel }}</span>
+          <van-icon name="arrow" @click="shiftWeek(1)" />
+        </div>
+        <div class="week-days">
+          <div
+            v-for="d in weekDays"
+            :key="d.date"
+            class="day"
+            :class="{ sel: d.date === selected, today: d.date === todayStr }"
+            @click="selected = d.date"
+          >
+            <div class="dow">{{ d.dowShort }}</div>
+            <div class="num">{{ d.num }}</div>
+            <div v-if="(lessons[d.date] || []).length" class="dot" />
+          </div>
+        </div>
+      </div>
+
+      <div class="section-head">
+        <span>{{ selected === todayStr ? '今日课程' : cnDate(selected) }}</span>
+        <span class="muted">共 {{ dayLessons.length }} 节</span>
+      </div>
+      <van-loading v-if="loading" style="margin: 30px auto" vertical>加载中…</van-loading>
+      <template v-else>
+        <LessonCard v-for="l in dayLessons" :key="l.id" :lesson="l" />
+        <van-empty v-if="!dayLessons.length" image="search" description="这一天没有课程" />
+      </template>
+
+      <button v-if="auth.isTeacher" class="fab" @click="openForm()">+</button>
+    </template>
 
     <!-- 新建排课 -->
-    <van-popup v-model:show="showForm" round position="bottom" style="padding: 18px 4px 24px">
+    <van-popup
+      v-model:show="showForm"
+      round
+      class="eduhub-popup"
+      :position="isDesktop ? 'center' : 'bottom'"
+      style="padding: 18px 4px 24px"
+    >
       <div class="form-title">新建排课</div>
       <van-cell-group inset>
         <van-field
@@ -217,7 +259,5 @@ async function submitForm() {
     </van-popup>
 
     <van-calendar v-model:show="showCalendar" :min-date="new Date(2020, 0, 1)" :max-date="new Date(2032, 11, 31)" @confirm="pickDate" />
-
-    <TabBar />
   </div>
 </template>
