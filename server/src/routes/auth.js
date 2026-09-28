@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { db } from '../db.js';
-import { authRequired, signToken } from '../middleware.js';
+import { authRequired, signToken, setAuthCookie, clearAuthCookie } from '../middleware.js';
 import { h, ApiError } from '../util.js';
 
 const router = Router();
@@ -26,7 +26,9 @@ router.post('/register', h(async (req, res) => {
   const r = db.prepare('INSERT INTO users (name, phone, password_hash, role) VALUES (?, ?, ?, ?)')
     .run(String(name).trim(), String(phone), hash, role);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(r.lastInsertRowid);
-  res.status(201).json({ token: signToken(user), user: publicUser(user) });
+  const token = signToken(user);
+  setAuthCookie(res, token);
+  res.status(201).json({ token, user: publicUser(user) });
 }));
 
 router.post('/login', h(async (req, res) => {
@@ -36,12 +38,22 @@ router.post('/login', h(async (req, res) => {
   if (!user || !bcrypt.compareSync(String(password), user.password_hash)) {
     throw new ApiError(400, '手机号或密码不正确');
   }
-  res.json({ token: signToken(user), user: publicUser(user) });
+  const token = signToken(user);
+  setAuthCookie(res, token);
+  res.json({ token, user: publicUser(user) });
+}));
+
+/** 退出登录：清掉图片鉴权用的 Cookie */
+router.post('/logout', h(async (req, res) => {
+  clearAuthCookie(res);
+  res.json({ ok: true });
 }));
 
 router.get('/me', authRequired, h(async (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   if (!user) throw new ApiError(401, '用户不存在');
+  // 顺带续期 Cookie，避免长期使用时图片突然 401
+  setAuthCookie(res, signToken(user));
   res.json({ user: publicUser(user) });
 }));
 

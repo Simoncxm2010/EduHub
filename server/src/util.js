@@ -31,6 +31,35 @@ export function nowStamp() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+/** 'HH:MM' -> 分钟数 */
+export function toMin(t) {
+  const [h, m] = String(t).split(':').map(Number);
+  return h * 60 + m;
+}
+
+/** 分钟数 -> 'HH:MM'（自动按天取模） */
+export function minToTime(m) {
+  const v = ((Math.round(m) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(v / 60)).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`;
+}
+
+/** 星期几：0=周日 */
+export function weekdayOf(dateStr) {
+  return new Date(`${dateStr}T00:00:00`).getDay();
+}
+
+/** 闭区间内的每一天（带安全上限，避免误传超大区间） */
+export function eachDate(from, to) {
+  const out = [];
+  let cur = from;
+  let guard = 0;
+  while (cur <= to && guard++ < 400) {
+    out.push(cur);
+    cur = addDays(cur, 1);
+  }
+  return out;
+}
+
 /** 包装异步路由，统一错误返回 */
 export function h(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);

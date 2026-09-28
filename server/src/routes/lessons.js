@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { db, today } from '../db.js';
 import { authRequired, teacherOnly, studentOnly, assertClassAccess } from '../middleware.js';
-import { h, ApiError, isDate, isTime, addDays, nowStamp } from '../util.js';
+import { h, ApiError, isDate, isTime, addDays, nowStamp, toMin, minToTime, weekdayOf, eachDate } from '../util.js';
 
 const router = Router();
 router.use(authRequired);
@@ -9,6 +9,7 @@ router.use(authRequired);
 const ATTEND_STATUSES = ['present', 'late', 'absent', 'leave'];
 /** 学生自助签到可选的状态（缺勤由老师判定，学生不能自选） */
 const SELF_STATUSES = ['present', 'late', 'leave'];
+const STATUS_CN = { scheduled: '待上课', done: '已完成', canceled: '已取消' };
 
 /** 只接受本站上传目录下的图片地址，避免把外部链接存进库 */
 function normImage(v) {
@@ -16,6 +17,38 @@ function normImage(v) {
   const s = String(v);
   if (!/^\/uploads\/[A-Za-z0-9._-]+$/.test(s)) throw new ApiError(400, '图片地址不合法');
   return s;
+}
+
+/**
+ * 找出该教师当天的排课冲突：
+ * - type=class：同一班级时间重叠（同一个班不可能同时上两节课）
+ * - type=room ：不同班级但同一教室时间重叠
+ */
+function findConflicts(teacherId, { class_id, date, start_time, duration_min = 60, room = '' }) {
+  const start = toMin(start_time);
+  const end = start + Number(duration_min || 60);
+  const rows = db.prepare(`
+    SELECT l.id, l.class_id, l.date, l.start_time, l.duration_min, l.room, l.topic, c.name AS class_name
+    FROM lessons l JOIN classes c ON c.id = l.class_id
+    WHERE c.teacher_id = ? AND l.date = ? AND l.status != 'canceled'
+  `).all(teacherId, date);
+
+  const out = [];
+  for (const r of rows) {
+    const s = toMin(r.start_time);
+    const e = s + Number(r.duration_min || 60);
+    if (s >= end || start >= e) continue; // 不重叠
+    if (class_id && r.class_id === Number(class_id)) out.push({ type: 'class', lesson: r });
+    else if (room && r.room && r.room === room) out.push({ type: 'room', lesson: r });
+  }
+  return out;
+}
+
+function conflictText(c) {
+  const l = c.lesson;
+  return c.type === 'room'
+    ? `${l.class_name} ${l.start_time}（教室 ${l.room} 占用）`
+    : `${l.class_name} ${l.start_time}-${minToTime(toMin(l.start_time) + l.duration_min)}`;
 }
 
 function lessonScope(user) {
@@ -78,6 +111,163 @@ router.post('/', teacherOnly, h(async (req, res) => {
   res.status(201).json({ lessons });
 }));
 
+/**
+ * 单次排课冲突预检（新建/复制课时前调用）。
+ * 注意：这条路由必须在 /:id 之前注册，否则会被 /:id 当成 id 捕获。
+ */
+router.get('/check', teacherOnly, h(async (req, res) => {
+  const { date, start_time, duration_min = 60, room = '', class_id } = req.query;
+  if (!isDate(date) || !isTime(start_time)) throw new ApiError(400, '日期或时间格式不正确');
+  const conflicts = findConflicts(req.user.id, {
+    class_id: Number(class_id) || null,
+    date,
+    start_time,
+    duration_min: Number(duration_min) || 60,
+    room: String(room || ''),
+  }).map((c) => ({ type: c.type, text: conflictText(c), lesson: c.lesson }));
+  res.json({ conflicts });
+}));
+
+/**
+ * 智能排课建议：看这个班过去的排课规律，猜出常用的星期、时间、时长、教室。
+ */
+router.get('/smart/suggest', teacherOnly, h(async (req, res) => {
+  const cls = assertClassAccess(req.user, Number(req.query.class_id));
+  const rows = db.prepare(`
+    SELECT date, start_time, duration_min, room FROM lessons
+    WHERE class_id = ? AND status != 'canceled' ORDER BY date DESC LIMIT 40
+  `).all(cls.id);
+  if (!rows.length) return res.json({ suggestion: null });
+
+  const tally = new Map();
+  for (const r of rows) {
+    const key = [weekdayOf(r.date), r.start_time, r.duration_min, r.room].join('|');
+    tally.set(key, (tally.get(key) || 0) + 1);
+  }
+  const [best, hits] = [...tally.entries()].sort((a, b) => b[1] - a[1])[0];
+  const [weekday, startTime, duration, room] = best.split('|');
+  res.json({
+    suggestion: {
+      weekdays: [Number(weekday)],
+      start_time: startTime,
+      duration_min: Number(duration),
+      room,
+      hits,
+      sampled: rows.length,
+    },
+  });
+}));
+
+/**
+ * 智能排课：按「每周哪几天 + 时间 + 日期范围」批量生成课时，
+ * 自动跳过与已有课程冲突或老师手动排除的日期。
+ * dry_run 为真时只返回计划，不写库（用于预览）。
+ */
+router.post('/smart/plan', teacherOnly, h(async (req, res) => {
+  const b = req.body || {};
+  const cls = assertClassAccess(req.user, Number(b.class_id));
+
+  const weekdays = Array.isArray(b.weekdays)
+    ? [...new Set(b.weekdays.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6))]
+    : [];
+  if (!weekdays.length) throw new ApiError(400, '请选择每周上课的日子');
+  const { from, to } = b;
+  if (!isDate(from) || !isDate(to)) throw new ApiError(400, '请选择日期范围');
+  if (to < from) throw new ApiError(400, '结束日期不能早于开始日期');
+  if (!isTime(b.start_time)) throw new ApiError(400, '请选择上课时间');
+
+  const duration = Math.min(Math.max(Number(b.duration_min) || 60, 15), 480);
+  const room = String(b.room || '');
+  const topic = String(b.topic || '');
+  const skipDates = new Set(Array.isArray(b.skip_dates) ? b.skip_dates.filter(isDate) : []);
+
+  const dates = eachDate(from, to).filter((d) => weekdays.includes(weekdayOf(d)));
+  if (dates.length > 200) throw new ApiError(400, '一次最多生成 200 节课，请缩短日期范围');
+
+  const plan = dates.map((date) => {
+    if (skipDates.has(date)) return { date, status: 'skip', reason: '已手动排除' };
+    const conflicts = findConflicts(req.user.id, {
+      class_id: cls.id, date, start_time: b.start_time, duration_min: duration, room,
+    });
+    if (conflicts.length) return { date, status: 'conflict', reason: conflictText(conflicts[0]) };
+    return { date, status: 'ok', reason: '' };
+  });
+
+  const summary = {
+    total: plan.length,
+    ok: plan.filter((p) => p.status === 'ok').length,
+    conflict: plan.filter((p) => p.status === 'conflict').length,
+    skip: plan.filter((p) => p.status === 'skip').length,
+  };
+
+  if (b.dry_run !== false) return res.json({ plan, summary, settings: { from, to, start_time: b.start_time, duration_min: duration, room, topic, weekdays } });
+
+  const insert = db.prepare('INSERT INTO lessons (class_id, date, start_time, duration_min, room, topic) VALUES (?, ?, ?, ?, ?, ?)');
+  const createdIds = [];
+  db.exec('BEGIN');
+  try {
+    for (const p of plan) {
+      if (p.status !== 'ok') continue;
+      createdIds.push(insert.run(cls.id, p.date, b.start_time, duration, room, topic).lastInsertRowid);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  res.status(201).json({
+    created: createdIds.map((id) => lessonWithClass(req.user, id)),
+    skipped: plan.filter((p) => p.status !== 'ok'),
+    summary,
+  });
+}));
+
+/** 导出课时与签到明细（CSV，带 BOM 以便 Excel 正确识别中文） */
+router.get('/export/csv', h(async (req, res) => {
+  const cls = assertClassAccess(req.user, Number(req.query.class_id));
+  const from = isDate(req.query.from) ? req.query.from : '0000-01-01';
+  const to = isDate(req.query.to) ? req.query.to : '9999-12-31';
+
+  const lessons = db.prepare(`
+    SELECT l.*, (SELECT content FROM lesson_records r WHERE r.lesson_id = l.id) AS content
+    FROM lessons l WHERE l.class_id = ? AND l.date BETWEEN ? AND ?
+    ORDER BY l.date, l.start_time
+  `).all(cls.id, from, to);
+
+  const marks = db.prepare(`
+    SELECT a.lesson_id, a.status, a.signature FROM attendance a
+    JOIN lessons l ON l.id = a.lesson_id WHERE l.class_id = ?
+  `).all(cls.id);
+  const byLesson = new Map();
+  for (const m of marks) {
+    const t = byLesson.get(m.lesson_id) || { present: 0, late: 0, absent: 0, leave: 0, signed: 0 };
+    t[m.status] += 1;
+    if (m.signature) t.signed += 1;
+    byLesson.set(m.lesson_id, t);
+  }
+
+  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const header = ['日期', '星期', '开始', '结束', '班级', '教室', '主题', '状态', '出勤', '迟到', '缺勤', '请假', '已签名', '课堂记录'];
+  const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  const lines = [header.map(esc).join(',')];
+  for (const l of lessons) {
+    const t = byLesson.get(l.id) || { present: 0, late: 0, absent: 0, leave: 0, signed: 0 };
+    lines.push([
+      l.date, WEEK[weekdayOf(l.date)], l.start_time,
+      minToTime(toMin(l.start_time) + l.duration_min),
+      cls.name, l.room, l.topic, STATUS_CN[l.status] || l.status,
+      t.present, t.late, t.absent, t.leave, t.signed,
+      String(l.content || '').replace(/\s+/g, ' ').slice(0, 120),
+    ].map(esc).join(','));
+  }
+
+  const stamp = from === '0000-01-01' ? '全部' : `${from}_${to}`;
+  const filename = encodeURIComponent(`${cls.name}-课时签到记录-${stamp}.csv`);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="eduhub-export.csv"; filename*=UTF-8''${filename}`);
+  res.send('\uFEFF' + lines.join('\r\n'));
+}));
+
 /** 课时详情：名单 + 签到（含留痕） + 课堂记录 */
 router.get('/:id', h(async (req, res) => {
   const lesson = lessonWithClass(req.user, Number(req.params.id));
@@ -126,6 +316,18 @@ router.delete('/:id', teacherOnly, h(async (req, res) => {
   if (!lesson) throw new ApiError(404, '课时不存在');
   db.prepare('DELETE FROM lessons WHERE id = ?').run(lesson.id);
   res.json({ ok: true });
+}));
+
+/** 复制课时到另一天（教师）：沿用时间/时长/教室/主题，不带签到与留痕 */
+router.post('/:id/duplicate', teacherOnly, h(async (req, res) => {
+  const lesson = lessonWithClass(req.user, Number(req.params.id));
+  if (!lesson) throw new ApiError(404, '课时不存在');
+  const date = req.body?.date;
+  if (!isDate(date)) throw new ApiError(400, '请选择要复制到的日期');
+  const r = db.prepare(
+    'INSERT INTO lessons (class_id, date, start_time, duration_min, room, topic) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(lesson.class_id, date, lesson.start_time, lesson.duration_min, lesson.room, lesson.topic);
+  res.status(201).json({ lesson: lessonWithClass(req.user, r.lastInsertRowid) });
 }));
 
 /** 保存签到（教师）：整节课程的状态 + 签名/照片留痕 */

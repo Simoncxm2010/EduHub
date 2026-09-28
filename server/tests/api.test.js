@@ -185,9 +185,6 @@ describe('师枢 EduHub API', () => {
     assert.equal(r.status, 201);
     assert.match(r.data.url, /^\/uploads\/[\w.-]+\.png$/);
     photoUrl = r.data.url;
-    const served = await fetch(base + photoUrl);
-    assert.equal(served.status, 200);
-    assert.equal(served.headers.get('content-type'), 'image/png');
   });
 
   it('上传签名图片', async () => {
@@ -291,5 +288,160 @@ describe('师枢 EduHub API', () => {
     const lesson = r.data.lessons.find((l) => l.id === lessonId);
     assert.equal(lesson.has_checkin, 1);
     assert.ok(lesson.signed_count >= 1);
+  });
+
+  /* ---------- 图片鉴权 ---------- */
+
+  it('未登录不能读取照片与签名', async () => {
+    const anon = await fetch(base + photoUrl);
+    assert.equal(anon.status, 401);
+    const withToken = await fetch(base + photoUrl, { headers: { authorization: `Bearer ${teacherToken}` } });
+    assert.equal(withToken.status, 200);
+    assert.equal(withToken.headers.get('content-type'), 'image/png');
+  });
+
+  it('登录下发 httpOnly Cookie，图片可凭 Cookie 读取，退出后清除', async () => {
+    const res = await fetch(base + '/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ phone: '13900000001', password: '123456' }),
+    });
+    const setCookie = res.headers.get('set-cookie') || '';
+    assert.match(setCookie, /eduhub_token=/);
+    assert.match(setCookie, /HttpOnly/i);
+    const cookie = setCookie.split(';')[0];
+
+    const img = await fetch(base + photoUrl, { headers: { cookie } });
+    assert.equal(img.status, 200);
+
+    const out = await fetch(base + '/api/auth/logout', { method: 'POST', headers: { cookie } });
+    assert.equal(out.status, 200);
+    assert.match(out.headers.get('set-cookie') || '', /eduhub_token=;/);
+  });
+
+  /* ---------- 智能排课 ---------- */
+
+  const DOW = new Date(`${today()}T00:00:00`).getDay();
+
+  it('排课冲突预检识别同班级重叠', async () => {
+    // 该课时为 today() 18:30 起 90 分钟
+    const hit = await api('GET', `/api/lessons/check?class_id=${classId}&date=${today()}&start_time=19:00&duration_min=60`, teacherToken);
+    assert.equal(hit.status, 200);
+    assert.equal(hit.data.conflicts.length, 1);
+    assert.equal(hit.data.conflicts[0].type, 'class');
+
+    const free = await api('GET', `/api/lessons/check?class_id=${classId}&date=${addDays(today(), 3)}&start_time=19:00&duration_min=60`, teacherToken);
+    assert.equal(free.data.conflicts.length, 0);
+  });
+
+  it('智能排课预览：跳过冲突日期且不写库', async () => {
+    const body = {
+      class_id: classId, weekdays: [DOW], start_time: '18:30', duration_min: 90,
+      from: today(), to: addDays(today(), 21), dry_run: true,
+    };
+    const before = await api('GET', `/api/lessons?from=${today()}&to=${addDays(today(), 21)}&class_id=${classId}`, teacherToken);
+    const r = await api('POST', '/api/lessons/smart/plan', teacherToken, body);
+    assert.equal(r.status, 200);
+    assert.equal(r.data.summary.total, 4); // today / +7 / +14 / +21
+    assert.equal(r.data.summary.conflict, 2); // today 与 +7 已排过 18:30
+    assert.equal(r.data.summary.ok, 2);
+    assert.equal(r.data.plan[0].status, 'conflict');
+
+    const after = await api('GET', `/api/lessons?from=${today()}&to=${addDays(today(), 21)}&class_id=${classId}`, teacherToken);
+    assert.equal(after.data.lessons.length, before.data.lessons.length, 'dry_run 不应写库');
+  });
+
+  it('智能排课执行：只创建不冲突的课时', async () => {
+    const r = await api('POST', '/api/lessons/smart/plan', teacherToken, {
+      class_id: classId, weekdays: [DOW], start_time: '18:30', duration_min: 90,
+      from: today(), to: addDays(today(), 21), dry_run: false,
+    });
+    assert.equal(r.status, 201);
+    assert.equal(r.data.created.length, 2);
+    assert.equal(r.data.skipped.length, 2);
+    for (const l of r.data.created) assert.equal(l.status, 'scheduled');
+  });
+
+  it('智能排课支持手动排除日期', async () => {
+    const r = await api('POST', '/api/lessons/smart/plan', teacherToken, {
+      class_id: classId, weekdays: [DOW], start_time: '07:00', duration_min: 60,
+      from: addDays(today(), 14), to: addDays(today(), 21),
+      skip_dates: [addDays(today(), 14)], dry_run: true,
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.summary.skip, 1);
+    assert.equal(r.data.summary.ok, 1);
+    assert.equal(r.data.plan[0].reason, '已手动排除');
+  });
+
+  it('智能排课参数校验', async () => {
+    const noDay = await api('POST', '/api/lessons/smart/plan', teacherToken, {
+      class_id: classId, weekdays: [], start_time: '18:30', from: today(), to: addDays(today(), 7),
+    });
+    assert.equal(noDay.status, 400);
+    const badRange = await api('POST', '/api/lessons/smart/plan', teacherToken, {
+      class_id: classId, weekdays: [DOW], start_time: '18:30', from: addDays(today(), 7), to: today(),
+    });
+    assert.equal(badRange.status, 400);
+    const student = await api('POST', '/api/lessons/smart/plan', studentToken, {
+      class_id: classId, weekdays: [DOW], start_time: '18:30', from: today(), to: addDays(today(), 7),
+    });
+    assert.equal(student.status, 403);
+  });
+
+  it('智能排课建议识别该班常用时段', async () => {
+    const r = await api('GET', `/api/lessons/smart/suggest?class_id=${classId}`, teacherToken);
+    assert.equal(r.status, 200);
+    assert.ok(r.data.suggestion);
+    assert.equal(r.data.suggestion.start_time, '18:30');
+    assert.equal(r.data.suggestion.duration_min, 90);
+    assert.ok(r.data.suggestion.hits >= 2);
+  });
+
+  it('复制课时到另一天', async () => {
+    const target = addDays(today(), 30);
+    const r = await api('POST', `/api/lessons/${lessonId}/duplicate`, teacherToken, { date: target });
+    assert.equal(r.status, 201);
+    assert.equal(r.data.lesson.date, target);
+    assert.equal(r.data.lesson.start_time, '18:30');
+    assert.equal(r.data.lesson.duration_min, 90);
+    assert.equal(r.data.lesson.status, 'scheduled');
+    assert.equal(r.data.lesson.checkin_photo, null, '复制不应带走留痕');
+  });
+
+  /* ---------- 出勤统计与导出 ---------- */
+
+  it('班级出勤统计', async () => {
+    const r = await api('GET', `/api/classes/${classId}/stats`, teacherToken);
+    assert.equal(r.status, 200);
+    assert.ok(r.data.total_lessons >= 1);
+    assert.equal(r.data.stats.length, 3);
+    const marked = r.data.stats.filter((s) => s.marked > 0);
+    assert.ok(marked.length >= 1);
+    assert.equal(typeof marked[0].rate, 'number');
+    assert.ok(marked[0].rate >= 0 && marked[0].rate <= 100);
+
+    const forbid = await api('GET', `/api/classes/${classId}/stats`, studentToken);
+    assert.equal(forbid.status, 403);
+  });
+
+  it('导出 CSV：表头、BOM 与数据行', async () => {
+    const res = await fetch(`${base}/api/lessons/export/csv?class_id=${classId}`, {
+      headers: { authorization: `Bearer ${teacherToken}` },
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /text\/csv/);
+    assert.match(res.headers.get('content-disposition'), /attachment/);
+    const buf = Buffer.from(await res.arrayBuffer());
+    // Response.text() 会按规范吞掉 BOM，所以直接查原始字节（EF BB BF）
+    assert.deepEqual([...buf.subarray(0, 3)], [0xef, 0xbb, 0xbf], '需要 BOM 以便 Excel 识别中文');
+    const text = buf.toString('utf8');
+    const lines = text.replace(/^\uFEFF/, '').trim().split('\r\n');
+    assert.ok(lines.length >= 2);
+    assert.match(lines[0], /日期/);
+    assert.match(lines[0], /已签名/);
+
+    const anon = await fetch(`${base}/api/lessons/export/csv?class_id=${classId}`);
+    assert.equal(anon.status, 401);
   });
 });

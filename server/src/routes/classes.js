@@ -91,4 +91,44 @@ router.delete('/:id/students/:sid', teacherOnly, h(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/** 班级出勤统计（教师）：每个学生的出勤/迟到/缺勤/请假次数与出勤率 */
+router.get('/:id/stats', teacherOnly, h(async (req, res) => {
+  const cls = assertClassAccess(req.user, Number(req.params.id));
+  const students = db.prepare('SELECT id, name, phone FROM students WHERE class_id = ? ORDER BY created_at, id').all(cls.id);
+  const totalLessons = db.prepare(
+    "SELECT COUNT(*) AS n FROM lessons WHERE class_id = ? AND status != 'canceled'"
+  ).get(cls.id).n;
+
+  const rows = db.prepare(`
+    SELECT a.student_id, a.status, COUNT(*) AS n,
+           SUM(CASE WHEN a.signature IS NOT NULL THEN 1 ELSE 0 END) AS signed
+    FROM attendance a JOIN lessons l ON l.id = a.lesson_id
+    WHERE l.class_id = ? AND l.status != 'canceled'
+    GROUP BY a.student_id, a.status
+  `).all(cls.id);
+
+  const tally = new Map();
+  for (const r of rows) {
+    const t = tally.get(r.student_id) || { present: 0, late: 0, absent: 0, leave: 0, signed: 0 };
+    t[r.status] += r.n;
+    t.signed += r.signed;
+    tally.set(r.student_id, t);
+  }
+
+  const stats = students.map((s) => {
+    const t = tally.get(s.id) || { present: 0, late: 0, absent: 0, leave: 0, signed: 0 };
+    const marked = t.present + t.late + t.absent + t.leave;
+    return {
+      ...s,
+      ...t,
+      marked,
+      total_lessons: totalLessons,
+      // 出勤率按「已记录」的课时算，没记录的课时不算缺勤
+      rate: marked ? Math.round(((t.present + t.late) / marked) * 100) : null,
+    };
+  }).sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1) || a.name.localeCompare(b.name, 'zh'));
+
+  res.json({ total_lessons: totalLessons, stats });
+}));
+
 export default router;

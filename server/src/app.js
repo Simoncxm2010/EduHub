@@ -7,12 +7,15 @@ import classRoutes from './routes/classes.js';
 import lessonRoutes from './routes/lessons.js';
 import uploadRoutes from './routes/uploads.js';
 import { uploadsDir } from './db.js';
+import { authRequired } from './middleware.js';
 import { ApiError } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp() {
   const app = express();
+  // 反向代理（Nginx 等）后面才能拿到正确的协议，secure Cookie 需要
+  app.set('trust proxy', 1);
   // 图片上传单独放宽 body 上限，其余接口维持 1mb
   app.use('/api/uploads', express.json({ limit: '12mb' }));
   app.use(express.json({ limit: '1mb' }));
@@ -21,8 +24,9 @@ export function createApp() {
     res.json({ ok: true, name: '师枢 EduHub', time: new Date().toISOString() });
   });
 
-  // 照片与签名（文件名含随机 UUID，不可枚举）
-  app.use('/uploads', express.static(uploadsDir, { maxAge: '30d', immutable: true }));
+  // 课堂照片与学生签名属于隐私内容，必须登录后才能读取
+  // （<img> 带不了请求头，鉴权走登录时下发的 httpOnly Cookie）
+  app.use('/uploads', authRequired, express.static(uploadsDir, { maxAge: '7d', immutable: true }));
 
   app.use('/api/auth', authRoutes);
   app.use('/api/uploads', uploadRoutes);

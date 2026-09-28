@@ -23,18 +23,47 @@ export function jwtSecret() {
   return _secret;
 }
 
-/** 要求已登录，解析 Bearer Token */
-export function authRequired(req, res, next) {
+/**
+ * 登录令牌来源：优先 Authorization 头（前端 API 调用），
+ * 回退到 httpOnly Cookie —— <img src="/uploads/..."> 这类请求带不了请求头，
+ * 只能靠 Cookie 才能给照片与签名加上鉴权。
+ */
+function readToken(req) {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (header.startsWith('Bearer ')) return header.slice(7);
+  const cookie = req.headers.cookie || '';
+  const match = /(?:^|;\s*)eduhub_token=([^;]+)/.exec(cookie);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+/** 要求已登录 */
+export function authRequired(req, res, next) {
+  const token = readToken(req);
   if (!token) throw new ApiError(401, '请先登录');
   try {
     const payload = jwt.verify(token, jwtSecret());
-    req.user = { id: payload.uid, role: payload.role, name: payload.name };
+    req.user = { id: payload.uid, role: payload.role, name: payload.name, phone: payload.phone };
     next();
   } catch {
     throw new ApiError(401, '登录已过期，请重新登录');
   }
+}
+
+export const COOKIE_NAME = 'eduhub_token';
+
+/** 登录后同时下发 httpOnly Cookie，供图片等无法带请求头的场景使用 */
+export function setAuthCookie(res, token) {
+  res.cookie(COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 30 * 24 * 3600 * 1000,
+    secure: process.env.COOKIE_SECURE === '1',
+  });
+}
+
+export function clearAuthCookie(res) {
+  res.clearCookie(COOKIE_NAME, { path: '/' });
 }
 
 /** 仅教师可操作 */
@@ -64,5 +93,9 @@ export function assertClassAccess(user, classId) {
 
 /** 签发登录令牌 */
 export function signToken(user) {
-  return jwt.sign({ uid: user.id, role: user.role, name: user.name }, jwtSecret(), { expiresIn: '30d' });
+  return jwt.sign(
+    { uid: user.id, role: user.role, name: user.name, phone: user.phone },
+    jwtSecret(),
+    { expiresIn: '30d' }
+  );
 }
