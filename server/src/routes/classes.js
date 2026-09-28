@@ -1,19 +1,23 @@
 import { Router } from 'express';
 import { db, today } from '../db.js';
-import { authRequired, teacherOnly, studentOnly, assertClassAccess } from '../middleware.js';
+import { authRequired, teacherOnly, studentOnly, assertClassAccess, roleAtLeast } from '../middleware.js';
 import { h, ApiError, genInviteCode, pickColor } from '../util.js';
 
 const router = Router();
 router.use(authRequired);
 
-/** 班级列表：教师返回自己创建的；学生返回已加入的 */
+/** 班级列表：教师返回自己创建的；学生返回已加入的；管理员返回全部 */
 router.get('/', h(async (req, res) => {
   const base = `
     SELECT c.*,
       (SELECT COUNT(*) FROM students s WHERE s.class_id = c.id) AS student_count,
-      (SELECT MIN(l.date) FROM lessons l WHERE l.class_id = c.id AND l.date >= ? AND l.status = 'scheduled') AS next_lesson_date
-    FROM classes c`;
-  if (req.user.role === 'teacher') {
+      (SELECT MIN(l.date) FROM lessons l WHERE l.class_id = c.id AND l.date >= ? AND l.status = 'scheduled') AS next_lesson_date,
+      u.name AS teacher_name
+    FROM classes c JOIN users u ON u.id = c.teacher_id`;
+  if (roleAtLeast(req.user, 'admin')) {
+    const rows = db.prepare(`${base} ORDER BY c.created_at DESC`).all(today());
+    res.json({ classes: rows });
+  } else if (req.user.role === 'teacher') {
     const rows = db.prepare(`${base} WHERE c.teacher_id = ? ORDER BY c.created_at DESC`).all(today(), req.user.id);
     res.json({ classes: rows });
   } else {
@@ -23,12 +27,14 @@ router.get('/', h(async (req, res) => {
   }
 }));
 
-/** 创建班级（教师） */
+/** 创建班级（教师），可设置每节课课酬用于统计 */
 router.post('/', teacherOnly, h(async (req, res) => {
-  const { name, subject = '', description = '' } = req.body || {};
+  const { name, subject = '', description = '', rate = 0 } = req.body || {};
   if (!name || !String(name).trim()) throw new ApiError(400, '请填写班级名称');
-  const r = db.prepare('INSERT INTO classes (teacher_id, name, subject, description, color, invite_code) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(req.user.id, String(name).trim(), String(subject), String(description), pickColor(), genInviteCode());
+  const safeRate = Math.min(Math.max(Number(rate) || 0, 0), 1000000);
+  const r = db.prepare(
+    'INSERT INTO classes (teacher_id, name, subject, description, color, invite_code, rate) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(req.user.id, String(name).trim(), String(subject), String(description), pickColor(), genInviteCode(), safeRate);
   const cls = db.prepare('SELECT * FROM classes WHERE id = ?').get(r.lastInsertRowid);
   res.status(201).json({ class: cls });
 }));
@@ -62,8 +68,11 @@ router.put('/:id', teacherOnly, h(async (req, res) => {
   const cls = assertClassAccess(req.user, Number(req.params.id));
   const { name = cls.name, subject = cls.subject, description = cls.description } = req.body || {};
   if (!String(name).trim()) throw new ApiError(400, '班级名称不能为空');
-  db.prepare('UPDATE classes SET name = ?, subject = ?, description = ? WHERE id = ?')
-    .run(String(name).trim(), String(subject), String(description), cls.id);
+  const rate = req.body?.rate !== undefined
+    ? Math.min(Math.max(Number(req.body.rate) || 0, 0), 1000000)
+    : cls.rate;
+  db.prepare('UPDATE classes SET name = ?, subject = ?, description = ?, rate = ? WHERE id = ?')
+    .run(String(name).trim(), String(subject), String(description), rate, cls.id);
   res.json({ class: db.prepare('SELECT * FROM classes WHERE id = ?').get(cls.id) });
 }));
 

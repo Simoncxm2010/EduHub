@@ -6,6 +6,10 @@ import authRoutes from './routes/auth.js';
 import classRoutes from './routes/classes.js';
 import lessonRoutes from './routes/lessons.js';
 import uploadRoutes from './routes/uploads.js';
+import requestRoutes from './routes/requests.js';
+import availabilityRoutes from './routes/availability.js';
+import calendarRoutes from './routes/calendar.js';
+import adminRoutes from './routes/admin.js';
 import { uploadsDir } from './db.js';
 import { authRequired } from './middleware.js';
 import { ApiError } from './util.js';
@@ -32,6 +36,10 @@ export function createApp() {
   app.use('/api/uploads', uploadRoutes);
   app.use('/api/classes', classRoutes);
   app.use('/api/lessons', lessonRoutes);
+  app.use('/api/requests', requestRoutes);
+  app.use('/api/availability', availabilityRoutes);
+  app.use('/api/calendar', calendarRoutes);
+  app.use('/api/admin', adminRoutes);
   app.use('/api', (req, res) => res.status(404).json({ message: '接口不存在' }));
 
   // 生产模式：托管前端构建产物（web/dist），未登录路径回退到 index.html

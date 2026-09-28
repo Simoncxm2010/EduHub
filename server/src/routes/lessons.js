@@ -1,7 +1,10 @@
 import { Router } from 'express';
 import { db, today } from '../db.js';
-import { authRequired, teacherOnly, studentOnly, assertClassAccess } from '../middleware.js';
-import { h, ApiError, isDate, isTime, addDays, nowStamp, toMin, minToTime, weekdayOf, eachDate } from '../util.js';
+import { authRequired, teacherOnly, studentOnly, assertClassAccess, roleAtLeast } from '../middleware.js';
+import {
+  h, ApiError, isDate, isTime, addDays, nowStamp, toMin, minToTime, weekdayOf, eachDate, csvCell,
+} from '../util.js';
+import { findConflicts, conflictText } from '../conflicts.js';
 
 const router = Router();
 router.use(authRequired);
@@ -23,38 +26,16 @@ function normImage(v) {
  * 找出该教师当天的排课冲突：
  * - type=class：同一班级时间重叠（同一个班不可能同时上两节课）
  * - type=room ：不同班级但同一教室时间重叠
+ * 实现见 ../conflicts.js（申请审批也要用同一套判断）
  */
-function findConflicts(teacherId, { class_id, date, start_time, duration_min = 60, room = '' }) {
-  const start = toMin(start_time);
-  const end = start + Number(duration_min || 60);
-  const rows = db.prepare(`
-    SELECT l.id, l.class_id, l.date, l.start_time, l.duration_min, l.room, l.topic, c.name AS class_name
-    FROM lessons l JOIN classes c ON c.id = l.class_id
-    WHERE c.teacher_id = ? AND l.date = ? AND l.status != 'canceled'
-  `).all(teacherId, date);
 
-  const out = [];
-  for (const r of rows) {
-    const s = toMin(r.start_time);
-    const e = s + Number(r.duration_min || 60);
-    if (s >= end || start >= e) continue; // 不重叠
-    if (class_id && r.class_id === Number(class_id)) out.push({ type: 'class', lesson: r });
-    else if (room && r.room && r.room === room) out.push({ type: 'room', lesson: r });
-  }
-  return out;
-}
-
-function conflictText(c) {
-  const l = c.lesson;
-  return c.type === 'room'
-    ? `${l.class_name} ${l.start_time}（教室 ${l.room} 占用）`
-    : `${l.class_name} ${l.start_time}-${minToTime(toMin(l.start_time) + l.duration_min)}`;
-}
-
+/** 可见范围：管理员看全部；教师看自己班级；学生看已加入班级 */
 function lessonScope(user) {
-  return user.role === 'teacher'
-    ? { where: 'l.class_id IN (SELECT id FROM classes WHERE teacher_id = ?)', param: user.id }
-    : { where: "l.class_id IN (SELECT class_id FROM students WHERE user_id = ? AND user_id IS NOT NULL)", param: user.id };
+  if (roleAtLeast(user, 'admin')) return { where: '1 = 1', params: [] };
+  if (user.role === 'teacher') {
+    return { where: 'l.class_id IN (SELECT id FROM classes WHERE teacher_id = ?)', params: [user.id] };
+  }
+  return { where: 'l.class_id IN (SELECT class_id FROM students WHERE user_id = ?)', params: [user.id] };
 }
 
 function lessonWithClass(user, id) {
@@ -63,14 +44,14 @@ function lessonWithClass(user, id) {
     SELECT l.*, c.name AS class_name, c.color AS class_color, c.teacher_id
     FROM lessons l JOIN classes c ON c.id = l.class_id
     WHERE l.id = ? AND ${scope.where}
-  `).get(id, scope.param);
+  `).get(id, ...scope.params);
 }
 
 /** 课时列表：?from=YYYY-MM-DD&to=YYYY-MM-DD&class_id=1 */
 router.get('/', h(async (req, res) => {
   const scope = lessonScope(req.user);
   const conds = [scope.where];
-  const params = [scope.param];
+  const params = [...scope.params];
   if (req.query.from && req.query.to) {
     if (!isDate(req.query.from) || !isDate(req.query.to)) throw new ApiError(400, '日期格式不正确');
     conds.push('l.date >= ? AND l.date <= ?');
@@ -246,7 +227,7 @@ router.get('/export/csv', h(async (req, res) => {
     byLesson.set(m.lesson_id, t);
   }
 
-  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const esc = csvCell;
   const header = ['日期', '星期', '开始', '结束', '班级', '教室', '主题', '状态', '出勤', '迟到', '缺勤', '请假', '已签名', '课堂记录'];
   const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const lines = [header.map(esc).join(',')];
@@ -425,13 +406,14 @@ router.put('/:id/record', teacherOnly, h(async (req, res) => {
   res.json({ record });
 }));
 
-/** 首页概览：今日课程 + 统计 */
+/** 首页概览：今日课程 + 统计 + 待处理申请 + 本月课酬 */
 router.get('/dashboard/overview', h(async (req, res) => {
   const scope = lessonScope(req.user);
   const t = today();
   const day = new Date(`${t}T00:00:00`);
   const weekStart = addDays(t, -((day.getDay() + 6) % 7)); // 本周一（周日归到本周）
   const weekEnd = addDays(weekStart, 6);
+  const month = t.slice(0, 7);
 
   const todayLessons = db.prepare(`
     SELECT l.*, c.name AS class_name, c.color AS class_color,
@@ -442,26 +424,84 @@ router.get('/dashboard/overview', h(async (req, res) => {
     FROM lessons l JOIN classes c ON c.id = l.class_id
     WHERE ${scope.where} AND l.date = ?
     ORDER BY l.start_time
-  `).all(scope.param, t);
+  `).all(...scope.params, t);
+
+  const weekLessons = () => db.prepare(
+    `SELECT COUNT(*) AS n FROM lessons l WHERE ${scope.where} AND l.date BETWEEN ? AND ? AND l.status != 'canceled'`
+  ).get(...scope.params, weekStart, weekEnd).n;
 
   let stats;
-  if (req.user.role === 'teacher') {
+  if (roleAtLeast(req.user, 'admin')) {
+    stats = {
+      class_count: db.prepare('SELECT COUNT(*) AS n FROM classes').get().n,
+      student_count: db.prepare('SELECT COUNT(*) AS n FROM students').get().n,
+      teacher_count: db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'teacher'").get().n,
+      user_count: db.prepare('SELECT COUNT(*) AS n FROM users').get().n,
+      week_lessons: weekLessons(),
+      pending_requests: db.prepare("SELECT COUNT(*) AS n FROM requests WHERE status = 'pending'").get().n,
+    };
+  } else if (req.user.role === 'teacher') {
+    const income = db.prepare(`
+      SELECT COALESCE(SUM(c.rate), 0) AS total, COUNT(*) AS n
+      FROM lessons l JOIN classes c ON c.id = l.class_id
+      WHERE c.teacher_id = ? AND l.status = 'done' AND l.date LIKE ?
+    `).get(req.user.id, `${month}%`);
     stats = {
       class_count: db.prepare('SELECT COUNT(*) AS n FROM classes WHERE teacher_id = ?').get(req.user.id).n,
       student_count: db.prepare(
         'SELECT COUNT(DISTINCT name) AS n FROM students WHERE class_id IN (SELECT id FROM classes WHERE teacher_id = ?)'
       ).get(req.user.id).n,
-      week_lessons: db.prepare(`SELECT COUNT(*) AS n FROM lessons l WHERE ${scope.where} AND l.date BETWEEN ? AND ? AND l.status != 'canceled'`)
-        .get(scope.param, weekStart, weekEnd).n
+      week_lessons: weekLessons(),
+      month_done_lessons: income.n,
+      month_income: Math.round(income.total * 100) / 100,
+      pending_requests: db.prepare(
+        "SELECT COUNT(*) AS n FROM requests WHERE teacher_id = ? AND status = 'pending'"
+      ).get(req.user.id).n,
     };
   } else {
     stats = {
       class_count: db.prepare('SELECT COUNT(DISTINCT class_id) AS n FROM students WHERE user_id = ?').get(req.user.id).n,
-      week_lessons: db.prepare(`SELECT COUNT(*) AS n FROM lessons l WHERE ${scope.where} AND l.date BETWEEN ? AND ? AND l.status != 'canceled'`)
-        .get(scope.param, weekStart, weekEnd).n
+      week_lessons: weekLessons(),
+      my_pending: db.prepare(`
+        SELECT COUNT(*) AS n FROM requests r JOIN students s ON s.id = r.student_id
+        WHERE s.user_id = ? AND r.status = 'pending'
+      `).get(req.user.id).n,
     };
   }
+
   res.json({ today: t, today_lessons: todayLessons, week_range: [weekStart, weekEnd], stats });
+}));
+
+/**
+ * 批量改课时状态（教师）：放假 / 复课这类整段操作，
+ * 比一节节点「取消课时」实用得多。
+ */
+router.post('/bulk-status', teacherOnly, h(async (req, res) => {
+  const b = req.body || {};
+  const cls = assertClassAccess(req.user, Number(b.class_id));
+  const { from, to, status } = b;
+  if (!isDate(from) || !isDate(to)) throw new ApiError(400, '请选择日期范围');
+  if (to < from) throw new ApiError(400, '结束日期不能早于开始日期');
+  if (!['scheduled', 'canceled'].includes(status)) throw new ApiError(400, '只能批量设为待上课或已取消');
+
+  const targets = db.prepare(`
+    SELECT id FROM lessons WHERE class_id = ? AND date BETWEEN ? AND ? AND status != ?
+  `).all(cls.id, from, to, status);
+  if (!targets.length) return res.json({ updated: 0, dates: [] });
+
+  const upd = db.prepare('UPDATE lessons SET status = ? WHERE id = ?');
+  db.exec('BEGIN');
+  try {
+    for (const t of targets) upd.run(status, t.id);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  const dates = db.prepare(
+    'SELECT date FROM lessons WHERE class_id = ? AND date BETWEEN ? AND ? ORDER BY date'
+  ).all(cls.id, from, to).map((r) => r.date);
+  res.json({ updated: targets.length, dates, status });
 }));
 
 export default router;

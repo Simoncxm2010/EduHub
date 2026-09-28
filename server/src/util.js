@@ -7,6 +7,18 @@ export function genInviteCode() {
   return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
 }
 
+/** 日历订阅令牌：手机日历客户端无法带请求头，只能用 URL 里的令牌鉴权 */
+export function genFeedToken() {
+  return crypto.randomBytes(24).toString('base64url');
+}
+
+/** CSV 单元格转义：防止以 = + - @ 开头的值在 Excel 里被当作公式执行 */
+export function csvCell(value) {
+  let s = String(value ?? '');
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
 /** 日期字符串 YYYY-MM-DD 加 n 天 */
 export function addDays(dateStr, n) {
   const d = new Date(`${dateStr}T00:00:00`);

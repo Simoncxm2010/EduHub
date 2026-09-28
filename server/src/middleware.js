@@ -40,13 +40,37 @@ function readToken(req) {
 export function authRequired(req, res, next) {
   const token = readToken(req);
   if (!token) throw new ApiError(401, '请先登录');
+  let payload;
   try {
-    const payload = jwt.verify(token, jwtSecret());
-    req.user = { id: payload.uid, role: payload.role, name: payload.name, phone: payload.phone };
-    next();
+    payload = jwt.verify(token, jwtSecret());
   } catch {
     throw new ApiError(401, '登录已过期，请重新登录');
   }
+  // 账号可能被管理员停用或角色被调整，每次都按库里最新状态来
+  const user = db.prepare('SELECT id, name, phone, role, status FROM users WHERE id = ?').get(payload.uid);
+  if (!user) throw new ApiError(401, '用户不存在');
+  if (user.status === 'disabled') throw new ApiError(403, '账号已被停用，请联系管理员');
+  req.user = user;
+  next();
+}
+
+/** 角色等级：数字越大权限越高 */
+export const ROLE_LEVEL = { student: 1, teacher: 2, admin: 3, super: 4 };
+
+export function roleAtLeast(user, min) {
+  return (ROLE_LEVEL[user?.role] || 0) >= (ROLE_LEVEL[min] || 99);
+}
+
+/** 管理员及以上 */
+export function adminOnly(req, res, next) {
+  if (!roleAtLeast(req.user, 'admin')) throw new ApiError(403, '该操作需要管理员权限');
+  next();
+}
+
+/** 仅超级管理员 */
+export function superOnly(req, res, next) {
+  if (req.user?.role !== 'super') throw new ApiError(403, '该操作仅限超级管理员');
+  next();
 }
 
 export const COOKIE_NAME = 'eduhub_token';
@@ -66,9 +90,9 @@ export function clearAuthCookie(res) {
   res.clearCookie(COOKIE_NAME, { path: '/' });
 }
 
-/** 仅教师可操作 */
+/** 教学类操作：教师及以上都可以（管理员/超管往往也代课） */
 export function teacherOnly(req, res, next) {
-  if (req.user?.role !== 'teacher') throw new ApiError(403, '该操作仅限教师');
+  if (!roleAtLeast(req.user, 'teacher')) throw new ApiError(403, '该操作仅限教师及以上角色');
   next();
 }
 
@@ -78,10 +102,12 @@ export function studentOnly(req, res, next) {
   next();
 }
 
-/** 校验班级访问权限：教师必须是班级所有者；学生必须在班级中（students.user_id） */
+/** 校验班级访问权限：教师必须是班级所有者；学生必须在班级中（students.user_id）；
+ *  管理员及以上可查看任意班级 */
 export function assertClassAccess(user, classId) {
   const cls = db.prepare('SELECT * FROM classes WHERE id = ?').get(classId);
   if (!cls) throw new ApiError(404, '班级不存在');
+  if (roleAtLeast(user, 'admin')) return cls;
   if (user.role === 'teacher') {
     if (cls.teacher_id !== user.id) throw new ApiError(403, '无权访问该班级');
   } else {
