@@ -5,19 +5,27 @@ import { fileURLToPath } from 'node:url';
 import authRoutes from './routes/auth.js';
 import classRoutes from './routes/classes.js';
 import lessonRoutes from './routes/lessons.js';
+import uploadRoutes from './routes/uploads.js';
+import { uploadsDir } from './db.js';
 import { ApiError } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp() {
   const app = express();
+  // 图片上传单独放宽 body 上限，其余接口维持 1mb
+  app.use('/api/uploads', express.json({ limit: '12mb' }));
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', (req, res) => {
     res.json({ ok: true, name: '师枢 EduHub', time: new Date().toISOString() });
   });
 
+  // 照片与签名（文件名含随机 UUID，不可枚举）
+  app.use('/uploads', express.static(uploadsDir, { maxAge: '30d', immutable: true }));
+
   app.use('/api/auth', authRoutes);
+  app.use('/api/uploads', uploadRoutes);
   app.use('/api/classes', classRoutes);
   app.use('/api/lessons', lessonRoutes);
   app.use('/api', (req, res) => res.status(404).json({ message: '接口不存在' }));
@@ -27,7 +35,7 @@ export function createApp() {
   if (fs.existsSync(dist)) {
     app.use(express.static(dist));
     app.use((req, res, next) => {
-      if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
+      if (req.method !== 'GET' || req.path.startsWith('/api') || req.path.startsWith('/uploads')) return next();
       res.sendFile(path.join(dist, 'index.html'));
     });
   }

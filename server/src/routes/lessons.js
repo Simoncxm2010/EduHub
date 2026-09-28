@@ -1,12 +1,22 @@
 import { Router } from 'express';
 import { db, today } from '../db.js';
-import { authRequired, teacherOnly, assertClassAccess } from '../middleware.js';
-import { h, ApiError, isDate, isTime, addDays } from '../util.js';
+import { authRequired, teacherOnly, studentOnly, assertClassAccess } from '../middleware.js';
+import { h, ApiError, isDate, isTime, addDays, nowStamp } from '../util.js';
 
 const router = Router();
 router.use(authRequired);
 
 const ATTEND_STATUSES = ['present', 'late', 'absent', 'leave'];
+/** 学生自助签到可选的状态（缺勤由老师判定，学生不能自选） */
+const SELF_STATUSES = ['present', 'late', 'leave'];
+
+/** 只接受本站上传目录下的图片地址，避免把外部链接存进库 */
+function normImage(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const s = String(v);
+  if (!/^\/uploads\/[A-Za-z0-9._-]+$/.test(s)) throw new ApiError(400, '图片地址不合法');
+  return s;
+}
 
 function lessonScope(user) {
   return user.role === 'teacher'
@@ -40,7 +50,9 @@ router.get('/', h(async (req, res) => {
   const rows = db.prepare(`
     SELECT l.*, c.name AS class_name, c.color AS class_color,
       (SELECT COUNT(*) FROM students s WHERE s.class_id = l.class_id) AS student_count,
-      (SELECT COUNT(*) FROM attendance a WHERE a.lesson_id = l.id AND a.status IN ('present','late')) AS checked_count
+      (SELECT COUNT(*) FROM attendance a WHERE a.lesson_id = l.id AND a.status IN ('present','late')) AS checked_count,
+      (SELECT COUNT(*) FROM attendance a WHERE a.lesson_id = l.id AND a.signature IS NOT NULL) AS signed_count,
+      CASE WHEN l.checkin_photo IS NOT NULL OR l.teacher_signature IS NOT NULL THEN 1 ELSE 0 END AS has_checkin
     FROM lessons l JOIN classes c ON c.id = l.class_id
     WHERE ${conds.join(' AND ')}
     ORDER BY l.date, l.start_time, l.id
@@ -66,13 +78,24 @@ router.post('/', teacherOnly, h(async (req, res) => {
   res.status(201).json({ lessons });
 }));
 
-/** 课时详情：名单 + 签到 + 课堂记录 */
+/** 课时详情：名单 + 签到（含留痕） + 课堂记录 */
 router.get('/:id', h(async (req, res) => {
   const lesson = lessonWithClass(req.user, Number(req.params.id));
   if (!lesson) throw new ApiError(404, '课时不存在');
   const teacher = db.prepare('SELECT name FROM users WHERE id = ?').get(lesson.teacher_id);
   const students = db.prepare('SELECT * FROM students WHERE class_id = ? ORDER BY created_at, id').all(lesson.class_id);
-  const attendance = db.prepare('SELECT student_id, status, checked_at FROM attendance WHERE lesson_id = ?').all(lesson.id);
+  let attendance = db.prepare(
+    'SELECT student_id, status, signature, photo, signed_at, checked_at FROM attendance WHERE lesson_id = ?'
+  ).all(lesson.id);
+
+  // 学生只能看到自己的签名与照片，同学只给「是否已签」的状态
+  if (req.user.role !== 'teacher') {
+    const mine = students.find((s) => s.user_id === req.user.id)?.id ?? null;
+    attendance = attendance.map((a) => (a.student_id === mine
+      ? { ...a, signed: !!a.signature }
+      : { student_id: a.student_id, status: a.status, checked_at: a.checked_at, signed: !!a.signature }));
+  }
+
   const record = db.prepare('SELECT content, homework, updated_at FROM lesson_records WHERE lesson_id = ?').get(lesson.id) || null;
   res.json({ lesson, teacher, students, attendance, record });
 }));
@@ -105,7 +128,7 @@ router.delete('/:id', teacherOnly, h(async (req, res) => {
   res.json({ ok: true });
 }));
 
-/** 保存签到（教师）：整节课程的名单签到状态 */
+/** 保存签到（教师）：整节课程的状态 + 签名/照片留痕 */
 router.put('/:id/attendance', teacherOnly, h(async (req, res) => {
   const lesson = lessonWithClass(req.user, Number(req.params.id));
   if (!lesson) throw new ApiError(404, '课时不存在');
@@ -113,7 +136,14 @@ router.put('/:id/attendance', teacherOnly, h(async (req, res) => {
   const inClass = new Set(
     db.prepare('SELECT id FROM students WHERE class_id = ?').all(lesson.class_id).map((s) => s.id)
   );
-  const save = db.prepare('INSERT INTO attendance (lesson_id, student_id, status) VALUES (?, ?, ?)');
+  // 未显式提交签名/照片时沿用旧值，避免前端局部提交把留痕清掉
+  const before = new Map(
+    db.prepare('SELECT student_id, signature, photo, signed_at FROM attendance WHERE lesson_id = ?')
+      .all(lesson.id).map((a) => [a.student_id, a])
+  );
+  const save = db.prepare(
+    'INSERT INTO attendance (lesson_id, student_id, status, signature, photo, signed_at) VALUES (?, ?, ?, ?, ?, ?)'
+  );
   db.exec('BEGIN');
   try {
     db.prepare('DELETE FROM attendance WHERE lesson_id = ?').run(lesson.id);
@@ -121,15 +151,62 @@ router.put('/:id/attendance', teacherOnly, h(async (req, res) => {
       const sid = Number(it?.student_id);
       if (!inClass.has(sid)) continue;
       if (!ATTEND_STATUSES.includes(it?.status)) throw new ApiError(400, '签到状态不合法');
-      save.run(lesson.id, sid, it.status);
+      const prev = before.get(sid);
+      const signature = 'signature' in it ? normImage(it.signature) : (prev?.signature ?? null);
+      const photo = 'photo' in it ? normImage(it.photo) : (prev?.photo ?? null);
+      const signedAt = signature ? (prev?.signed_at || nowStamp()) : null;
+      save.run(lesson.id, sid, it.status, signature, photo, signedAt);
     }
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
-  const attendance = db.prepare('SELECT student_id, status, checked_at FROM attendance WHERE lesson_id = ?').all(lesson.id);
+  const attendance = db.prepare(
+    'SELECT student_id, status, signature, photo, signed_at, checked_at FROM attendance WHERE lesson_id = ?'
+  ).all(lesson.id);
   res.json({ attendance });
+}));
+
+/** 课堂留痕（教师）：课堂照片 + 教师签名 */
+router.put('/:id/checkin', teacherOnly, h(async (req, res) => {
+  const lesson = lessonWithClass(req.user, Number(req.params.id));
+  if (!lesson) throw new ApiError(404, '课时不存在');
+  const b = req.body || {};
+  const photo = 'checkin_photo' in b ? normImage(b.checkin_photo) : lesson.checkin_photo;
+  const signature = 'teacher_signature' in b ? normImage(b.teacher_signature) : lesson.teacher_signature;
+  db.prepare('UPDATE lessons SET checkin_photo = ?, teacher_signature = ?, checkin_at = ? WHERE id = ?')
+    .run(photo, signature, photo || signature ? nowStamp() : null, lesson.id);
+  res.json({ lesson: lessonWithClass(req.user, lesson.id) });
+}));
+
+/** 学生自助签到：拍照 + 手写签名（需在班级内） */
+router.put('/:id/attendance/me', studentOnly, h(async (req, res) => {
+  const lesson = lessonWithClass(req.user, Number(req.params.id));
+  if (!lesson) throw new ApiError(404, '课时不存在');
+  if (lesson.status === 'canceled') throw new ApiError(400, '本节课已取消，无需签到');
+  const me = db.prepare('SELECT * FROM students WHERE class_id = ? AND user_id = ?').get(lesson.class_id, req.user.id);
+  if (!me) throw new ApiError(403, '你不在该班级中');
+
+  const { status, signature, photo } = req.body || {};
+  if (!SELF_STATUSES.includes(status)) throw new ApiError(400, '请选择签到状态');
+  const sig = normImage(signature);
+  const pic = normImage(photo);
+  if (status !== 'leave' && !sig) throw new ApiError(400, '请先手写签名再提交签到');
+
+  const existing = db.prepare('SELECT id FROM attendance WHERE lesson_id = ? AND student_id = ?').get(lesson.id, me.id);
+  if (existing) {
+    db.prepare(`UPDATE attendance SET status = ?, signature = ?, photo = ?, signed_at = ?,
+                checked_at = datetime('now','localtime') WHERE id = ?`)
+      .run(status, sig, pic, sig ? nowStamp() : null, existing.id);
+  } else {
+    db.prepare('INSERT INTO attendance (lesson_id, student_id, status, signature, photo, signed_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(lesson.id, me.id, status, sig, pic, sig ? nowStamp() : null);
+  }
+  const mine = db.prepare(
+    'SELECT student_id, status, signature, photo, signed_at, checked_at FROM attendance WHERE lesson_id = ? AND student_id = ?'
+  ).get(lesson.id, me.id);
+  res.json({ attendance: mine, student_id: me.id });
 }));
 
 /** 保存课堂记录（教师） */
@@ -157,7 +234,9 @@ router.get('/dashboard/overview', h(async (req, res) => {
   const todayLessons = db.prepare(`
     SELECT l.*, c.name AS class_name, c.color AS class_color,
       (SELECT COUNT(*) FROM students s WHERE s.class_id = l.class_id) AS student_count,
-      (SELECT COUNT(*) FROM attendance a WHERE a.lesson_id = l.id AND a.status IN ('present','late')) AS checked_count
+      (SELECT COUNT(*) FROM attendance a WHERE a.lesson_id = l.id AND a.status IN ('present','late')) AS checked_count,
+      (SELECT COUNT(*) FROM attendance a WHERE a.lesson_id = l.id AND a.signature IS NOT NULL) AS signed_count,
+      CASE WHEN l.checkin_photo IS NOT NULL OR l.teacher_signature IS NOT NULL THEN 1 ELSE 0 END AS has_checkin
     FROM lessons l JOIN classes c ON c.id = l.class_id
     WHERE ${scope.where} AND l.date = ?
     ORDER BY l.start_time

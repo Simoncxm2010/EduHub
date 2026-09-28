@@ -11,6 +11,12 @@ if (dbPath !== ':memory:') {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 }
 
+// 照片与签名存文件（不进数据库），目录随数据文件走
+export const uploadsDir = dbPath === ':memory:'
+  ? path.join(process.env.TMPDIR || '/tmp', 'eduhub-uploads')
+  : path.join(path.dirname(dbPath), 'uploads');
+fs.mkdirSync(uploadsDir, { recursive: true });
+
 export const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
@@ -55,6 +61,9 @@ CREATE TABLE IF NOT EXISTS lessons (
   room TEXT NOT NULL DEFAULT '',
   topic TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'scheduled' CHECK(status IN ('scheduled','done','canceled')),
+  checkin_photo TEXT,
+  teacher_signature TEXT,
+  checkin_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -63,6 +72,9 @@ CREATE TABLE IF NOT EXISTS attendance (
   lesson_id INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
   student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
   status TEXT NOT NULL CHECK(status IN ('present','late','absent','leave')),
+  signature TEXT,
+  photo TEXT,
+  signed_at TEXT,
   checked_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -78,6 +90,22 @@ CREATE INDEX IF NOT EXISTS idx_lessons_class ON lessons(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_class ON students(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_user ON students(user_id);
 `);
+
+/** 老库补列：SQLite 没有 ADD COLUMN IF NOT EXISTS */
+function ensureColumn(table, column, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
+}
+
+// v0.2 起：签到留痕（课堂照片 / 签名）
+ensureColumn('lessons', 'checkin_photo', 'TEXT');
+ensureColumn('lessons', 'teacher_signature', 'TEXT');
+ensureColumn('lessons', 'checkin_at', 'TEXT');
+ensureColumn('attendance', 'signature', 'TEXT');
+ensureColumn('attendance', 'photo', 'TEXT');
+ensureColumn('attendance', 'signed_at', 'TEXT');
 
 /** 本地时区的今天，格式 YYYY-MM-DD */
 export function today() {

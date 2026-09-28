@@ -24,6 +24,13 @@ export function isTime(s) {
   return typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
 }
 
+/** 本地时区的当前时刻，格式 YYYY-MM-DD HH:MM:SS */
+export function nowStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 /** 包装异步路由，统一错误返回 */
 export function h(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);

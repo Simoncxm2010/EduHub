@@ -169,4 +169,127 @@ describe('师枢 EduHub API', () => {
     assert.equal(r.status, 200);
     assert.equal(r.data.lesson.status, 'done');
   });
+
+  /* ---------- 拍照 / 手写签名留痕 ---------- */
+
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  let photoUrl, signatureUrl;
+
+  it('未登录不能上传图片', async () => {
+    const r = await api('POST', '/api/uploads', null, { data: PNG, kind: 'photo' });
+    assert.equal(r.status, 401);
+  });
+
+  it('上传课堂照片返回可访问地址', async () => {
+    const r = await api('POST', '/api/uploads', teacherToken, { data: PNG, kind: 'photo' });
+    assert.equal(r.status, 201);
+    assert.match(r.data.url, /^\/uploads\/[\w.-]+\.png$/);
+    photoUrl = r.data.url;
+    const served = await fetch(base + photoUrl);
+    assert.equal(served.status, 200);
+    assert.equal(served.headers.get('content-type'), 'image/png');
+  });
+
+  it('上传签名图片', async () => {
+    const r = await api('POST', '/api/uploads', teacherToken, { data: PNG, kind: 'signature' });
+    assert.equal(r.status, 201);
+    signatureUrl = r.data.url;
+  });
+
+  it('拒绝非法图片数据', async () => {
+    const bad = await api('POST', '/api/uploads', teacherToken, { data: 'not-an-image', kind: 'photo' });
+    assert.equal(bad.status, 400);
+    const evil = await api('POST', '/api/uploads', teacherToken, { data: 'https://evil.test/a.png', kind: 'photo' });
+    assert.equal(evil.status, 400);
+  });
+
+  it('教师保存课堂留痕（照片 + 教师签名）', async () => {
+    const r = await api('PUT', `/api/lessons/${lessonId}/checkin`, teacherToken, {
+      checkin_photo: photoUrl,
+      teacher_signature: signatureUrl,
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.lesson.checkin_photo, photoUrl);
+    assert.equal(r.data.lesson.teacher_signature, signatureUrl);
+    assert.ok(r.data.lesson.checkin_at);
+  });
+
+  it('留痕接口拒绝外部图片地址', async () => {
+    const r = await api('PUT', `/api/lessons/${lessonId}/checkin`, teacherToken, { checkin_photo: 'http://x.test/a.jpg' });
+    assert.equal(r.status, 400);
+  });
+
+  it('学生不能修改课堂留痕', async () => {
+    const r = await api('PUT', `/api/lessons/${lessonId}/checkin`, studentToken, { checkin_photo: photoUrl });
+    assert.equal(r.status, 403);
+  });
+
+  it('教师按名单保存学生签名', async () => {
+    const detail = await api('GET', `/api/lessons/${lessonId}`, teacherToken);
+    const items = detail.data.students.map((s, i) => ({
+      student_id: s.id,
+      status: i === 0 ? 'present' : 'absent',
+      signature: i === 0 ? signatureUrl : null,
+    }));
+    const r = await api('PUT', `/api/lessons/${lessonId}/attendance`, teacherToken, { items });
+    assert.equal(r.status, 200);
+    const signed = r.data.attendance.find((a) => a.status === 'present');
+    assert.equal(signed.signature, signatureUrl);
+    assert.ok(signed.signed_at);
+  });
+
+  it('局部提交签到不会清掉已保存的签名', async () => {
+    const detail = await api('GET', `/api/lessons/${lessonId}`, teacherToken);
+    // 只提交状态，不带 signature 字段
+    const r = await api('PUT', `/api/lessons/${lessonId}/attendance`, teacherToken, {
+      items: detail.data.students.map((s) => ({ student_id: s.id, status: 'present' })),
+    });
+    assert.equal(r.status, 200);
+    const kept = r.data.attendance.filter((a) => a.signature);
+    assert.equal(kept.length, 1);
+  });
+
+  it('学生自助签到必须带签名', async () => {
+    const noSig = await api('PUT', `/api/lessons/${lessonId}/attendance/me`, studentToken, { status: 'present' });
+    assert.equal(noSig.status, 400);
+    const badStatus = await api('PUT', `/api/lessons/${lessonId}/attendance/me`, studentToken, {
+      status: 'absent', signature: signatureUrl,
+    });
+    assert.equal(badStatus.status, 400);
+  });
+
+  it('学生自助拍照 + 签名签到成功', async () => {
+    const r = await api('PUT', `/api/lessons/${lessonId}/attendance/me`, studentToken, {
+      status: 'present', signature: signatureUrl, photo: photoUrl,
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.attendance.status, 'present');
+    assert.equal(r.data.attendance.signature, signatureUrl);
+    assert.ok(r.data.attendance.signed_at);
+  });
+
+  it('学生只看到自己的签名，同学的仅显示是否已签', async () => {
+    const r = await api('GET', `/api/lessons/${lessonId}`, studentToken);
+    assert.equal(r.status, 200);
+    const mine = r.data.attendance.filter((a) => a.signature);
+    assert.equal(mine.length, 1);
+    for (const a of r.data.attendance) {
+      if (!a.signature) assert.equal(a.photo, undefined);
+      assert.equal(typeof a.signed, 'boolean');
+    }
+  });
+
+  it('教师能看到全部学生的签名与照片', async () => {
+    const r = await api('GET', `/api/lessons/${lessonId}`, teacherToken);
+    const withSig = r.data.attendance.filter((a) => a.signature);
+    assert.ok(withSig.length >= 1);
+    assert.equal(withSig.some((a) => a.photo), true);
+  });
+
+  it('课时列表带留痕标记', async () => {
+    const r = await api('GET', `/api/lessons?from=${today()}&to=${addDays(today(), 1)}`, teacherToken);
+    const lesson = r.data.lessons.find((l) => l.id === lessonId);
+    assert.equal(lesson.has_checkin, 1);
+    assert.ok(lesson.signed_count >= 1);
+  });
 });
