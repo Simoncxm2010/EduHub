@@ -15,15 +15,28 @@ const routes = [
 
 const router = createRouter({ history: createWebHistory(), routes });
 
+// 每次页面加载后校验一次身份：既验证 token 是否有效，
+// 也顺带让服务端续期图片鉴权用的 httpOnly Cookie
+let bootChecked = false;
+
 router.beforeEach(async (to) => {
   const auth = useAuthStore();
   if (to.meta.public) return auth.token ? '/' : true;
   if (!auth.token) return { path: '/login', query: to.fullPath !== '/' ? { redirect: to.fullPath } : {} };
-  if (!auth.user) {
+
+  if (!bootChecked) {
+    bootChecked = true;
     try {
       await auth.fetchMe();
     } catch {
-      auth.logout();
+      await auth.logout();
+      return '/login';
+    }
+  } else if (!auth.user) {
+    try {
+      await auth.fetchMe();
+    } catch {
+      await auth.logout();
       return '/login';
     }
   }

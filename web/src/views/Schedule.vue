@@ -1,22 +1,43 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
-import { showToast } from 'vant';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import api, { toastError } from '../api';
 import { useAuthStore } from '../store';
 import { isDesktop } from '../composables/layout';
-import { addDays, cnDate, fmtDate, weekStartOf, WEEKDAY_CN } from '../utils';
+import {
+  addDays, cnDate, fmtDate, monthStartOf, nowMinutes, weekStartOf, WEEKDAY_SHORT,
+} from '../utils';
 import LessonCard from '../components/LessonCard.vue';
 import WeekGrid from '../components/WeekGrid.vue';
+import MonthGrid from '../components/MonthGrid.vue';
+import LessonFormDialog from '../components/LessonFormDialog.vue';
+import SmartPlanDialog from '../components/SmartPlanDialog.vue';
 
 const auth = useAuthStore();
 const todayStr = fmtDate(new Date());
-const anchor = ref(todayStr); // 当前周的任一天
+
+const viewMode = ref(localStorage.getItem('eduhub_cal_view') || 'week'); // week | month
+const anchor = ref(todayStr);
 const selected = ref(todayStr);
+const classFilter = ref(null);
+const classes = ref([]);
 const lessons = ref({});
 const loading = ref(false);
+const now = ref(nowMinutes());
 
+let timer = null;
+onMounted(() => {
+  timer = setInterval(() => { now.value = nowMinutes(); }, 60000);
+});
+onUnmounted(() => clearInterval(timer));
+
+/* ---------------- 时间范围 ---------------- */
 const weekStart = computed(() => weekStartOf(anchor.value));
 const weekEnd = computed(() => addDays(weekStart.value, 6));
+const gridStart = computed(() => weekStartOf(monthStartOf(anchor.value)));
+const gridEnd = computed(() => addDays(gridStart.value, 41));
+const rangeFrom = computed(() => (viewMode.value === 'week' ? weekStart.value : gridStart.value));
+const rangeTo = computed(() => (viewMode.value === 'week' ? weekEnd.value : gridEnd.value));
+
 const weekDays = computed(() => {
   const out = [];
   for (let i = 0; i < 7; i++) {
@@ -25,33 +46,59 @@ const weekDays = computed(() => {
     out.push({
       date: d,
       num: dt.getDate(),
-      dow: WEEKDAY_CN[dt.getDay()],
-      dowShort: '一二三四五六日'[(dt.getDay() + 6) % 7],
+      dow: `周${WEEKDAY_SHORT[dt.getDay()]}`,
+      dowShort: WEEKDAY_SHORT[dt.getDay()],
       isToday: d === todayStr,
     });
   }
   return out;
 });
+
+const monthDays = computed(() => {
+  const month = monthStartOf(anchor.value).slice(0, 7);
+  const out = [];
+  for (let i = 0; i < 42; i++) {
+    const date = addDays(gridStart.value, i);
+    out.push({
+      date,
+      day: Number(date.slice(8, 10)),
+      inMonth: date.slice(0, 7) === month,
+      isToday: date === todayStr,
+      selected: date === selected.value,
+      lessons: lessons.value[date] || [],
+    });
+  }
+  return out;
+});
+
 const dayLessons = computed(() => lessons.value[selected.value] || []);
-const rangeLabel = computed(() => `${weekStart.value.slice(5).replace('-', '/')} - ${weekEnd.value.slice(5).replace('-', '/')}`);
 const weekLessonCount = computed(() => Object.values(lessons.value).reduce((n, list) => n + list.length, 0));
+const monthLabel = computed(() => `${anchor.value.slice(0, 4)} 年 ${Number(anchor.value.slice(5, 7))} 月`);
+const rangeLabel = computed(() => `${weekStart.value.slice(5).replace('-', '/')} - ${weekEnd.value.slice(5).replace('-', '/')}`);
 
-function shiftWeek(n) {
-  anchor.value = addDays(weekStart.value, n * 7);
-  selected.value = anchor.value;
-  load();
-}
+/** 当前时间线只画在今天这一列的范围内 */
+const nowMinuteForGrid = computed(() => {
+  if (viewMode.value !== 'week') return null;
+  if (!weekDays.value.some((d) => d.isToday)) return null;
+  return now.value;
+});
 
-function goToday() {
-  anchor.value = todayStr;
-  selected.value = todayStr;
-  load();
+/* ---------------- 数据 ---------------- */
+async function loadClasses() {
+  try {
+    const d = await api.get('/classes');
+    classes.value = d.classes;
+  } catch (e) {
+    toastError(e);
+  }
 }
 
 async function load() {
   loading.value = true;
   try {
-    const d = await api.get('/lessons', { params: { from: weekStart.value, to: weekEnd.value } });
+    const params = { from: rangeFrom.value, to: rangeTo.value };
+    if (classFilter.value) params.class_id = classFilter.value;
+    const d = await api.get('/lessons', { params });
     const map = {};
     for (const l of d.lessons) (map[l.date] ||= []).push(l);
     lessons.value = map;
@@ -61,203 +108,223 @@ async function load() {
     loading.value = false;
   }
 }
-onMounted(load);
+onMounted(async () => {
+  await loadClasses();
+  await load();
+});
 
-/* ---------- 新建排课（教师） ---------- */
-const showForm = ref(false);
-const classes = ref([]);
-const form = reactive({ class_id: null, class_name: '', date: '', start_time: '', duration_min: 90, room: '', topic: '', repeat_weeks: 1 });
-const showClassPicker = ref(false);
-const showTimePicker = ref(false);
-const showDurPicker = ref(false);
-const showCalendar = ref(false);
-const submitting = ref(false);
+watch([viewMode, classFilter], () => {
+  localStorage.setItem('eduhub_cal_view', viewMode.value);
+  load();
+});
 
-const hourCol = Array.from({ length: 17 }, (_, i) => String(i + 6).padStart(2, '0'));
-const minuteCol = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'));
-const timeColumns = [{ values: [...hourCol] }, { values: [...minuteCol] }];
-const durationOptions = [30, 40, 45, 60, 75, 90, 120, 180].map((v) => ({ text: `${v} 分钟`, value: v }));
+function setFilter(id) {
+  classFilter.value = classFilter.value === id ? null : id;
+}
 
-async function openForm(date) {
-  if (!classes.value.length) {
-    try {
-      const d = await api.get('/classes');
-      classes.value = d.classes;
-    } catch (e) {
-      toastError(e);
-      return;
-    }
-    if (!classes.value.length) return showToast('请先在「班级」页创建班级');
+function shift(n) {
+  if (viewMode.value === 'week') {
+    anchor.value = addDays(weekStart.value, n * 7);
+    selected.value = anchor.value;
+  } else {
+    const d = new Date(`${monthStartOf(anchor.value)}T00:00:00`);
+    d.setMonth(d.getMonth() + n, 1);
+    anchor.value = fmtDate(d);
   }
-  form.date = date || selected.value || todayStr;
-  form.start_time = form.start_time || '18:00';
+  load();
+}
+
+function goToday() {
+  anchor.value = todayStr;
+  selected.value = todayStr;
+  load();
+}
+
+function onMonthSelectDay(date) {
+  selected.value = date;
+  anchor.value = date;
+  if (!isDesktop.value) {
+    // 手机上点月视图的某天，直接切回周视图看当天详情
+    viewMode.value = 'week';
+  } else {
+    load();
+  }
+}
+
+/* ---------------- 排课对话框 ---------------- */
+const showForm = ref(false);
+const showSmart = ref(false);
+const formPreset = ref({});
+
+async function openForm(preset = {}) {
+  if (!classes.value.length) await loadClasses();
+  if (!classes.value.length) return toastError(new Error('请先在「班级」页创建班级'));
+  formPreset.value = { date: preset.date || selected.value, start_time: preset.start_time, class_id: classFilter.value };
   showForm.value = true;
 }
 
-function pickClass({ selectedOptions }) {
-  form.class_id = selectedOptions[0]?.value;
-  form.class_name = selectedOptions[0]?.text;
-  showClassPicker.value = false;
+async function openSmart() {
+  if (!classes.value.length) await loadClasses();
+  if (!classes.value.length) return toastError(new Error('请先在「班级」页创建班级'));
+  showSmart.value = true;
 }
 
-function pickTime({ selectedValues }) {
-  form.start_time = `${selectedValues[0]}:${selectedValues[1]}`;
-  showTimePicker.value = false;
-}
-
-function pickDuration({ selectedOptions }) {
-  form.duration_min = selectedOptions[0]?.value;
-  showDurPicker.value = false;
-}
-
-function pickDate(d) {
-  form.date = fmtDate(d);
-  showCalendar.value = false;
-}
-
-async function submitForm() {
-  if (!form.class_id) return showToast('请选择班级');
-  if (!form.date) return showToast('请选择日期');
-  if (!form.start_time) return showToast('请选择时间');
-  submitting.value = true;
-  try {
-    const d = await api.post('/lessons', { ...form });
-    showToast(`已排 ${d.lessons.length} 节课`);
-    showForm.value = false;
-    anchor.value = form.date;
-    selected.value = form.date;
-    await load();
-  } catch (e) {
-    toastError(e);
-  } finally {
-    submitting.value = false;
+async function onCreated(d) {
+  const first = d.created?.[0] || d.lessons?.[0];
+  if (first) {
+    anchor.value = first.date;
+    selected.value = first.date;
   }
+  await load();
 }
 </script>
 
 <template>
   <div class="page">
-    <!-- ============ 桌面端：周日历 ============ -->
+    <!-- ============ 桌面端 ============ -->
     <template v-if="isDesktop">
       <div class="page-head">
         <div>
           <h1>排课</h1>
-          <div class="sub">{{ weekStart }} 至 {{ weekEnd }} · 本周 {{ weekLessonCount }} 节课</div>
+          <div class="sub">
+            <template v-if="viewMode === 'week'">{{ weekStart }} 至 {{ weekEnd }} · 本周 {{ weekLessonCount }} 节课</template>
+            <template v-else>{{ monthLabel }} · 本月共 {{ weekLessonCount }} 节课</template>
+          </div>
         </div>
         <div class="page-head-actions">
-          <van-button round plain icon="arrow-left" @click="shiftWeek(-1)">上一周</van-button>
-          <van-button round plain @click="goToday">本周</van-button>
-          <van-button round plain icon="arrow" @click="shiftWeek(1)">下一周</van-button>
+          <div class="seg-toggle">
+            <button :class="{ on: viewMode === 'week' }" @click="viewMode = 'week'">周</button>
+            <button :class="{ on: viewMode === 'month' }" @click="viewMode = 'month'">月</button>
+          </div>
+          <van-button round plain icon="arrow-left" @click="shift(-1)">{{ viewMode === 'week' ? '上一周' : '上一月' }}</van-button>
+          <van-button round plain @click="goToday">今天</van-button>
+          <van-button round plain icon="arrow" @click="shift(1)">{{ viewMode === 'week' ? '下一周' : '下一月' }}</van-button>
+          <van-button v-if="auth.isTeacher" round plain type="primary" icon="bulb-o" @click="openSmart">智能排课</van-button>
           <van-button v-if="auth.isTeacher" round type="primary" icon="plus" @click="openForm()">新建排课</van-button>
         </div>
+      </div>
+
+      <div v-if="classes.length > 1" class="filter-bar">
+        <span class="chip" :class="{ on: !classFilter }" @click="classFilter = null">全部班级</span>
+        <span
+          v-for="c in classes"
+          :key="c.id"
+          class="chip"
+          :class="{ on: classFilter === c.id }"
+          :style="classFilter === c.id ? { background: c.color, borderColor: c.color, color: '#fff' } : {}"
+          @click="setFilter(c.id)"
+        >
+          <i class="chip-dot" :style="{ background: c.color }" />{{ c.name }}
+        </span>
       </div>
 
       <van-loading v-if="loading" style="margin: 40px auto" vertical>加载中…</van-loading>
       <template v-else>
         <WeekGrid
+          v-if="viewMode === 'week'"
           :days="weekDays"
           :lessons-by-date="lessons"
+          :now-minute="nowMinuteForGrid"
           @select="(l) => $router.push(`/lessons/${l.id}`)"
-          @create="(date) => auth.isTeacher && openForm(date)"
+          @create="(p) => auth.isTeacher && openForm(p)"
+        />
+        <MonthGrid
+          v-else
+          :days="monthDays"
+          @select-day="onMonthSelectDay"
+          @select-lesson="(l) => $router.push(`/lessons/${l.id}`)"
         />
         <div class="muted" style="margin-top: 10px">
-          {{ auth.isTeacher ? '点击空白时段可直接在该日排课；点击课程块查看签到与记录。' : '点击课程块查看签到与课堂记录。' }}
+          <template v-if="viewMode === 'week'">
+            {{ auth.isTeacher ? '鼠标移到空白时段会显示将要排课的时间，点击即可按该时间排课；点击课程块查看签到与记录。' : '点击课程块查看签到与课堂记录。' }}
+          </template>
+          <template v-else>
+            {{ auth.isTeacher ? '点击某一天可切到周视图并直接排课。' : '点击某一天查看当天课程。' }}
+          </template>
         </div>
       </template>
     </template>
 
-    <!-- ============ 移动端：周条 + 当日列表 ============ -->
+    <!-- ============ 移动端 ============ -->
     <template v-else>
       <van-nav-bar title="排课" />
 
-      <div class="card">
-        <div class="week-nav">
-          <van-icon name="arrow-left" @click="shiftWeek(-1)" />
-          <span class="title" @click="goToday">{{ rangeLabel }}</span>
-          <van-icon name="arrow" @click="shiftWeek(1)" />
-        </div>
-        <div class="week-days">
-          <div
-            v-for="d in weekDays"
-            :key="d.date"
-            class="day"
-            :class="{ sel: d.date === selected, today: d.date === todayStr }"
-            @click="selected = d.date"
-          >
-            <div class="dow">{{ d.dowShort }}</div>
-            <div class="num">{{ d.num }}</div>
-            <div v-if="(lessons[d.date] || []).length" class="dot" />
+      <div class="seg-toggle seg-toggle-block">
+        <button :class="{ on: viewMode === 'week' }" @click="viewMode = 'week'">周视图</button>
+        <button :class="{ on: viewMode === 'month' }" @click="viewMode = 'month'">月视图</button>
+      </div>
+
+      <div v-if="classes.length > 1" class="filter-bar">
+        <span class="chip" :class="{ on: !classFilter }" @click="classFilter = null">全部</span>
+        <span
+          v-for="c in classes"
+          :key="c.id"
+          class="chip"
+          :class="{ on: classFilter === c.id }"
+          :style="classFilter === c.id ? { background: c.color, borderColor: c.color, color: '#fff' } : {}"
+          @click="setFilter(c.id)"
+        >
+          <i class="chip-dot" :style="{ background: c.color }" />{{ c.name }}
+        </span>
+      </div>
+
+      <!-- 周视图：周条 + 当日列表 -->
+      <template v-if="viewMode === 'week'">
+        <div class="card">
+          <div class="week-nav">
+            <van-icon name="arrow-left" @click="shift(-1)" />
+            <span class="title" @click="goToday">{{ rangeLabel }}</span>
+            <van-icon name="arrow" @click="shift(1)" />
+          </div>
+          <div class="week-days">
+            <div
+              v-for="d in weekDays"
+              :key="d.date"
+              class="day"
+              :class="{ sel: d.date === selected, today: d.date === todayStr }"
+              @click="selected = d.date"
+            >
+              <div class="dow">{{ d.dowShort }}</div>
+              <div class="num">{{ d.num }}</div>
+              <div v-if="(lessons[d.date] || []).length" class="dot" />
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="section-head">
-        <span>{{ selected === todayStr ? '今日课程' : cnDate(selected) }}</span>
-        <span class="muted">共 {{ dayLessons.length }} 节</span>
-      </div>
-      <van-loading v-if="loading" style="margin: 30px auto" vertical>加载中…</van-loading>
-      <template v-else>
-        <LessonCard v-for="l in dayLessons" :key="l.id" :lesson="l" />
-        <van-empty v-if="!dayLessons.length" image="search" description="这一天没有课程" />
+        <div class="section-head">
+          <span>{{ selected === todayStr ? '今日课程' : cnDate(selected) }}</span>
+          <span class="muted">共 {{ dayLessons.length }} 节</span>
+        </div>
+        <van-loading v-if="loading" style="margin: 30px auto" vertical>加载中…</van-loading>
+        <template v-else>
+          <LessonCard v-for="l in dayLessons" :key="l.id" :lesson="l" />
+          <van-empty v-if="!dayLessons.length" image="search" description="这一天没有课程" />
+        </template>
       </template>
 
-      <button v-if="auth.isTeacher" class="fab" @click="openForm()">+</button>
+      <!-- 月视图 -->
+      <template v-else>
+        <div class="card" style="padding: 12px">
+          <div class="week-nav">
+            <van-icon name="arrow-left" @click="shift(-1)" />
+            <span class="title" @click="goToday">{{ monthLabel }}</span>
+            <van-icon name="arrow" @click="shift(1)" />
+          </div>
+          <van-loading v-if="loading" style="margin: 24px auto" vertical>加载中…</van-loading>
+          <MonthGrid v-else :days="monthDays" compact @select-day="onMonthSelectDay" />
+          <div class="muted" style="text-align: center; margin-top: 8px">点某一天可查看当天课程</div>
+        </div>
+      </template>
+
+      <div v-if="auth.isTeacher" class="fab-group">
+        <button class="fab fab-minor" title="智能排课" @click="openSmart">
+          <van-icon name="bulb-o" size="20" />
+        </button>
+        <button class="fab" title="新建排课" @click="openForm()">+</button>
+      </div>
     </template>
 
-    <!-- 新建排课 -->
-    <van-popup
-      v-model:show="showForm"
-      round
-      class="eduhub-popup"
-      :position="isDesktop ? 'center' : 'bottom'"
-      style="padding: 18px 4px 24px"
-    >
-      <div class="form-title">新建排课</div>
-      <van-cell-group inset>
-        <van-field
-          :model-value="form.class_name"
-          label="班级"
-          placeholder="选择班级"
-          readonly
-          is-link
-          @click="showClassPicker = true"
-        />
-        <van-field :model-value="form.date" label="日期" placeholder="选择日期" readonly is-link @click="showCalendar = true" />
-        <van-field :model-value="form.start_time" label="开始时间" placeholder="选择时间" readonly is-link @click="showTimePicker = true" />
-        <van-field
-          :model-value="form.duration_min ? form.duration_min + ' 分钟' : ''"
-          label="时长"
-          placeholder="选择时长"
-          readonly
-          is-link
-          @click="showDurPicker = true"
-        />
-        <van-field v-model="form.room" label="教室" placeholder="如：301 教室（选填）" />
-        <van-field v-model="form.topic" label="主题" placeholder="本节课内容（选填）" />
-        <van-field label="每周重复">
-          <template #input>
-            <van-stepper v-model="form.repeat_weeks" :min="1" :max="16" />
-            <span class="muted" style="margin-left: 8px">周</span>
-          </template>
-        </van-field>
-      </van-cell-group>
-      <div style="margin: 16px">
-        <van-button round block type="primary" :loading="submitting" @click="submitForm">确认排课</van-button>
-      </div>
-    </van-popup>
-
-    <van-popup v-model:show="showClassPicker" round position="bottom">
-      <van-picker :columns="classes.map((c) => ({ text: c.name, value: c.id }))" @confirm="pickClass" @cancel="showClassPicker = false" />
-    </van-popup>
-
-    <van-popup v-model:show="showTimePicker" round position="bottom">
-      <van-picker title="选择时间" :columns="timeColumns" @confirm="pickTime" @cancel="showTimePicker = false" />
-    </van-popup>
-
-    <van-popup v-model:show="showDurPicker" round position="bottom">
-      <van-picker title="选择时长" :columns="durationOptions" @confirm="pickDuration" @cancel="showDurPicker = false" />
-    </van-popup>
-
-    <van-calendar v-model:show="showCalendar" :min-date="new Date(2020, 0, 1)" :max-date="new Date(2032, 11, 31)" @confirm="pickDate" />
+    <LessonFormDialog v-model:show="showForm" :classes="classes" :preset="formPreset" @created="onCreated" />
+    <SmartPlanDialog v-model:show="showSmart" :classes="classes" @created="onCreated" />
   </div>
 </template>

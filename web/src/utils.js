@@ -30,6 +30,31 @@ export function cnDate(dateStr) {
   return `${d.getMonth() + 1}月${d.getDate()}日 ${WEEKDAY_CN[d.getDay()]}`;
 }
 
+/** 'HH:MM' -> 分钟数 */
+export function toMin(t) {
+  const [h, m] = String(t).split(':').map(Number);
+  return h * 60 + m;
+}
+
+/** 分钟数 -> 'HH:MM' */
+export function minToTime(m) {
+  const v = ((Math.round(m) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(v / 60)).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`;
+}
+
+/** 当前时刻的分钟数 */
+export function nowMinutes() {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+/** 某月第一天 / 该月日历网格的第一天（周一开头） */
+export function monthStartOf(dateStr) {
+  return `${dateStr.slice(0, 7)}-01`;
+}
+
+export const WEEKDAY_SHORT = ['日', '一', '二', '三', '四', '五', '六'];
+
 export const LESSON_STATUS = {
   scheduled: { text: '待上课', color: 'primary' },
   done: { text: '已完成', color: 'success' },

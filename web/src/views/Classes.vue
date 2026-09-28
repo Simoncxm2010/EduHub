@@ -86,7 +86,7 @@ async function joinClass() {
     <van-nav-bar v-else title="班级" />
 
     <div v-if="!isDesktop && !auth.isTeacher" class="card" style="display: flex; align-items: center; gap: 10px">
-      <van-icon name="invitation-o" size="22" color="#4f6ef2" />
+      <van-icon name="add-o" size="22" color="#4f6ef2" />
       <div style="flex: 1">
         <div style="font-size: 14px; font-weight: 500">加入新班级</div>
         <div class="muted">输入老师提供的邀请码</div>

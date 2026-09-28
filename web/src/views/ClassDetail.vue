@@ -15,7 +15,9 @@ const classId = Number(route.params.id);
 
 const info = ref(null);
 const upcoming = ref([]);
+const stats = ref(null);
 const loading = ref(true);
+const exporting = ref(false);
 
 async function load() {
   loading.value = true;
@@ -24,6 +26,9 @@ async function load() {
     const from = fmtDate(new Date());
     const d = await api.get('/lessons', { params: { from, to: addDays(from, 60), class_id: classId } });
     upcoming.value = d.lessons.slice(0, isDesktop.value ? 8 : 5);
+    if (auth.isTeacher) {
+      stats.value = await api.get(`/classes/${classId}/stats`);
+    }
   } catch (e) {
     toastError(e);
   } finally {
@@ -31,6 +36,30 @@ async function load() {
   }
 }
 onMounted(load);
+
+/** 导出本节课表与签到明细为 CSV（Excel 可直接打开） */
+async function exportCsv() {
+  exporting.value = true;
+  try {
+    const blob = await api.get('/lessons/export/csv', {
+      params: { class_id: classId },
+      responseType: 'blob',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${info.value.class.name}-课时签到记录.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast({ type: 'success', message: '已导出 CSV' });
+  } catch (e) {
+    toastError(e);
+  } finally {
+    exporting.value = false;
+  }
+}
 
 async function copyCode() {
   try {
@@ -108,6 +137,18 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
             <div class="invite-code">{{ info.class.invite_code }}</div>
             <div class="muted" style="text-align: center">学生注册后，在「班级」页输入邀请码即可加入</div>
           </div>
+
+          <div v-if="auth.isTeacher" class="card">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px">
+              <div>
+                <div style="font-size: 14px; font-weight: 600">课时记录导出</div>
+                <div class="muted" style="margin-top: 4px">含日期、时长、签到人数与课堂记录，可用 Excel 打开</div>
+              </div>
+              <van-button size="small" round type="primary" plain icon="down" :loading="exporting" @click="exportCsv">
+                导出 CSV
+              </van-button>
+            </div>
+          </div>
         </div>
 
         <div class="col">
@@ -131,6 +172,66 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
           </div>
         </div>
       </div>
+
+      <template v-if="auth.isTeacher && stats">
+        <div class="section-head">
+          <span>出勤统计</span>
+          <span class="muted">按已记录的 {{ stats.total_lessons }} 节课统计</span>
+        </div>
+        <div class="card">
+          <!-- 桌面端：完整表格 -->
+          <table v-if="isDesktop" class="stat-table">
+            <thead>
+              <tr>
+                <th>学生</th>
+                <th>出勤</th>
+                <th>迟到</th>
+                <th>缺勤</th>
+                <th>请假</th>
+                <th>已签名</th>
+                <th>出勤率</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in stats.stats" :key="s.id">
+                <td>{{ s.name }}</td>
+                <td>{{ s.present }}</td>
+                <td>{{ s.late }}</td>
+                <td>{{ s.absent }}</td>
+                <td>{{ s.leave }}</td>
+                <td>{{ s.signed }}</td>
+                <td>
+                  <div v-if="s.rate != null" class="rate-bar">
+                    <div class="rate-track">
+                      <div class="rate-fill" :style="{ width: `${s.rate}%`, background: s.rate >= 80 ? '#07c160' : s.rate >= 60 ? '#ff976a' : '#ee0a24' }" />
+                    </div>
+                    <span>{{ s.rate }}%</span>
+                  </div>
+                  <span v-else class="muted">暂无记录</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- 手机端：紧凑列表 -->
+          <template v-else>
+            <div v-for="s in stats.stats" :key="s.id" class="stat-row">
+              <div class="stat-row-top">
+                <span class="stat-row-name">{{ s.name }}</span>
+                <span v-if="s.rate != null" class="stat-row-rate">{{ s.rate }}%</span>
+                <span v-else class="muted">暂无记录</span>
+              </div>
+              <div v-if="s.rate != null" class="rate-track" style="margin: 6px 0">
+                <div class="rate-fill" :style="{ width: `${s.rate}%`, background: s.rate >= 80 ? '#07c160' : s.rate >= 60 ? '#ff976a' : '#ee0a24' }" />
+              </div>
+              <div class="muted">
+                出勤 {{ s.present }} · 迟到 {{ s.late }} · 缺勤 {{ s.absent }} · 请假 {{ s.leave }} · 已签名 {{ s.signed }}
+              </div>
+            </div>
+            <van-empty v-if="!stats.stats.length" image="search" description="暂无统计" style="padding: 16px 0" />
+          </template>
+        </div>
+      </template>
 
       <div class="section-head">
         <span>近期课时</span>

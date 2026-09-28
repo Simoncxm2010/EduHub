@@ -5,7 +5,7 @@ import { showConfirmDialog, showImagePreview, showToast } from 'vant';
 import api, { toastError } from '../api';
 import { useAuthStore } from '../store';
 import { isDesktop } from '../composables/layout';
-import { ATTEND_STATUS, cnDate, endTime, LESSON_STATUS } from '../utils';
+import { ATTEND_STATUS, cnDate, endTime, fmtDate, LESSON_STATUS } from '../utils';
 import { uploadImage } from '../utils/image';
 import SignaturePad from '../components/SignaturePad.vue';
 import PhotoField from '../components/PhotoField.vue';
@@ -224,6 +224,24 @@ async function removeLesson() {
   }
 }
 
+/* 复制本节课到另一天（不带走签到与留痕） */
+const showDupCal = ref(false);
+const duplicating = ref(false);
+
+async function duplicateTo(date) {
+  showDupCal.value = false;
+  duplicating.value = true;
+  try {
+    const d = await api.post(`/lessons/${lessonId}/duplicate`, { date: fmtDate(date) });
+    showToast({ type: 'success', message: `已复制到 ${d.lesson.date}` });
+    router.push(`/lessons/${d.lesson.id}`);
+  } catch (e) {
+    toastError(e);
+  } finally {
+    duplicating.value = false;
+  }
+}
+
 function preview(url) {
   if (url) showImagePreview([url]);
 }
@@ -267,6 +285,7 @@ function preview(url) {
             @click="setStatus('canceled')"
           >取消课时</van-button>
           <van-button v-else size="small" round plain icon="revoke" @click="setStatus('scheduled')">恢复排课</van-button>
+          <van-button size="small" round plain icon="plus" @click="showDupCal = true">复制到其他日期</van-button>
           <van-button size="small" round plain type="danger" icon="delete-o" @click="removeLesson">删除</van-button>
         </div>
       </div>
@@ -515,5 +534,14 @@ function preview(url) {
         <van-button round block type="primary" :loading="self.saving" @click="submitSelf">提交签到</van-button>
       </div>
     </van-popup>
+
+    <!-- 复制课时到其他日期 -->
+    <van-calendar
+      v-model:show="showDupCal"
+      :min-date="new Date(2020, 0, 1)"
+      :max-date="new Date(2032, 11, 31)"
+      :title="`复制「${detail?.lesson.class_name || ''}」到哪一天？`"
+      @confirm="duplicateTo"
+    />
   </div>
 </template>

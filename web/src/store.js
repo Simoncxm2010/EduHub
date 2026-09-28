@@ -30,6 +30,8 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem('eduhub_user', JSON.stringify(d.user));
     },
     logout() {
+      // 清掉服务端下发的图片鉴权 Cookie（失败也不影响本地登出）
+      api.post('/auth/logout').catch(() => {});
       this.token = '';
       this.user = null;
       localStorage.removeItem('eduhub_token');

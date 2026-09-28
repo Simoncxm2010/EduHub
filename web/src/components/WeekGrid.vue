@@ -1,12 +1,13 @@
 <script setup>
-import { computed } from 'vue';
-import { endTime, LESSON_STATUS } from '../utils';
+import { computed, ref } from 'vue';
+import { endTime, LESSON_STATUS, minToTime } from '../utils';
 
-/** 桌面端周日历：按时间定位课程块，重叠课程自动分栏 */
+/** 桌面端周日历：按时间定位课程块，重叠课程自动分栏，点空档直接排课 */
 const props = defineProps({
   days: { type: Array, required: true },
   lessonsByDate: { type: Object, default: () => ({}) },
   hourHeight: { type: Number, default: 62 },
+  nowMinute: { type: Number, default: null },
 });
 const emit = defineEmits(['select', 'create']);
 
@@ -93,6 +94,34 @@ function blockStyle(b) {
   };
 }
 
+/** 悬停时吸附到半小时，并显示将要排课的时间 */
+const hover = ref(null);
+
+function onColMove(e, date) {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const raw = ((e.clientY - rect.top) / props.hourHeight) * 60 + startHour.value * 60;
+  const snapped = Math.round(raw / 30) * 30;
+  const clamped = Math.max(startHour.value * 60, Math.min(snapped, endHour.value * 60 - 30));
+  hover.value = { date, time: minToTime(clamped), top: ((clamped - startHour.value * 60) / 60) * props.hourHeight };
+}
+
+function onColLeave() {
+  hover.value = null;
+}
+
+function onColClick(date) {
+  emit('create', { date, start_time: hover.value?.date === date ? hover.value.time : '18:00' });
+}
+
+/** 当前时间线：超出可显示时段（比如深夜）就不画，避免画到网格外面 */
+const nowTop = computed(() => {
+  if (props.nowMinute == null) return null;
+  const from = startHour.value * 60;
+  const to = endHour.value * 60;
+  if (props.nowMinute < from || props.nowMinute > to) return null;
+  return ((props.nowMinute - from) / 60) * props.hourHeight;
+});
+
 function statusText(l) {
   return (LESSON_STATUS[l.status] || LESSON_STATUS.scheduled).text;
 }
@@ -124,7 +153,9 @@ function statusText(l) {
           :key="d.date"
           class="wk-col"
           :class="{ today: d.isToday }"
-          @click="emit('create', d.date)"
+          @mousemove="onColMove($event, d.date)"
+          @mouseleave="onColLeave"
+          @click="onColClick(d.date)"
         >
           <div
             v-for="h in hours"
@@ -132,11 +163,26 @@ function statusText(l) {
             class="wk-line"
             :style="{ top: `${(h - startHour) * hourHeight}px` }"
           />
+
+          <!-- 悬停提示：点击即按这个时间排课 -->
+          <div
+            v-if="hover && hover.date === d.date"
+            class="wk-hover"
+            :style="{ top: `${hover.top}px` }"
+          >
+            <span>{{ hover.time }}</span>
+          </div>
+
+          <!-- 当前时间线（仅今天这一列） -->
+          <div v-if="nowTop != null && d.isToday" class="wk-now" :style="{ top: `${nowTop}px` }">
+            <i />
+          </div>
+
           <div
             v-for="b in layoutByDate[d.date] || []"
             :key="b.lesson.id"
             class="wk-block"
-            :class="{ canceled: b.lesson.status === 'canceled' }"
+            :class="{ canceled: b.lesson.status === 'canceled', done: b.lesson.status === 'done' }"
             :style="blockStyle(b)"
             :title="`${b.lesson.class_name} ${b.lesson.start_time}-${endTime(b.lesson.start_time, b.lesson.duration_min)}`"
             @click.stop="emit('select', b.lesson)"
@@ -146,6 +192,7 @@ function statusText(l) {
             <div class="wk-block-meta">
               <span v-if="b.lesson.room">{{ b.lesson.room }}</span>
               <span v-if="b.lesson.status !== 'scheduled'" class="wk-block-status">{{ statusText(b.lesson) }}</span>
+              <span v-else-if="b.lesson.checked_count" class="wk-block-checked">签到 {{ b.lesson.checked_count }}/{{ b.lesson.student_count }}</span>
             </div>
             <div v-if="b.lesson.topic" class="wk-block-topic">{{ b.lesson.topic }}</div>
           </div>
