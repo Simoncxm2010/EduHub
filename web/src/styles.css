@@ -878,7 +878,7 @@ body {
 .stat-table td:first-child,
 .stat-table th:first-child { text-align: left; }
 .stat-table tbody tr:last-child td { border-bottom: none; }
-.rate-bar { display: flex; align-items: center; gap: 8px; min-width: 110px; }
+.rate-bar { display: flex; align-items: center; gap: 8px; width: 170px; min-width: 110px; max-width: 100%; }
 .rate-track { flex: 1; height: 6px; background: var(--eduhub-seg); border-radius: 3px; overflow: hidden; }
 .rate-fill { height: 100%; border-radius: 3px; background: #07c160; }
 .stat-row { padding: 10px 0; border-bottom: 1px solid var(--eduhub-line-2); }

@@ -160,7 +160,7 @@ const AUDIT_CN = {
 };
 const AUDIT_ACTIONS = Object.keys(AUDIT_CN);
 
-async function loadSuperPanels() {
+async function loadSuperPanels(append = false) {
   if (!auth.isSuper) return;
   auditLoading.value = true;
   try {
@@ -171,8 +171,11 @@ async function loadSuperPanels() {
       }),
     ]);
     system.value = sys;
-    auditLogs.value = audit.logs;
     auditTotal.value = audit.total;
+    // 「加载更多」追加下一页，筛选/刷新时整页替换
+    auditLogs.value = append
+      ? [...auditLogs.value, ...audit.logs.filter((l) => !auditLogs.value.some((x) => x.id === l.id))]
+      : audit.logs;
   } catch (e) {
     toastError(e);
   } finally {
@@ -388,12 +391,10 @@ const systemItems = computed(() => {
           <span class="d-badge info">运行环境</span>
           <span class="d-badge mute">这些信息仅超管可见——机构管理员看不到运维细节</span>
         </div>
-        <div class="d-rows">
-          <div v-for="i in systemItems" :key="i.label" class="d-row">
-            <div class="grow">
-              <div class="meta">{{ i.label }}</div>
-              <div class="title" style="font-size: 14px">{{ i.value }}</div>
-            </div>
+        <div class="d-grid-2">
+          <div v-for="i in systemItems" :key="i.label" class="d-stat">
+            <div class="label">{{ i.label }}</div>
+            <div class="value" style="font-size: 17px">{{ i.value }}</div>
           </div>
         </div>
       </template>
@@ -438,7 +439,7 @@ const systemItems = computed(() => {
         </table>
       </div>
       <div v-if="auditTotal > auditLogs.length" class="d-inline" style="margin-top: 12px">
-        <button class="d-btn sm" :disabled="auditLoading" @click="auditOffset += 50; loadSuperPanels()">加载更多（共 {{ auditTotal }} 条）</button>
+        <button class="d-btn sm" :disabled="auditLoading" @click="auditOffset += 50; loadSuperPanels(true)">加载更多（已载 {{ auditLogs.length }} / 共 {{ auditTotal }} 条）</button>
       </div>
     </div>
 

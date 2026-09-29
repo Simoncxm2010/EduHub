@@ -24,11 +24,10 @@ const cards = computed(() => {
   const s = dash.value.stats || {};
   if (auth.isAdmin) {
     return [
-      { label: '用户总数', value: s.user_count ?? 0, icon: 'user-o' },
-      { label: '教师', value: s.teacher_count ?? 0, icon: 'manager-o' },
-      { label: '班级', value: s.class_count ?? 0, icon: 'friends-o' },
-      { label: '本周课时', value: s.week_lessons ?? 0, icon: 'calendar-o' },
-      { label: '待处理申请', value: s.pending_requests ?? 0, icon: 'todo-list-o', warn: s.pending_requests > 0 },
+      { label: '用户总数', value: s.user_count ?? 0, icon: 'user-o', sub: `教师 ${s.teacher_count ?? 0} · 学生档案 ${s.student_count ?? 0}` },
+      { label: '班级', value: s.class_count ?? 0, icon: 'friends-o', unit: '班' },
+      { label: '本周课时', value: s.week_lessons ?? 0, icon: 'calendar-o', unit: '节' },
+      { label: '待处理申请', value: s.pending_requests ?? 0, icon: 'todo-list-o', warn: s.pending_requests > 0, unit: '条' },
     ];
   }
   if (auth.canTeach) {
@@ -70,12 +69,13 @@ function statusOf(l) {
       </div>
     </div>
 
-    <div :class="cards.length > 4 ? 'd-grid-4' : 'd-grid-3'" style="margin-bottom: 18px">
+    <div :class="auth.isAdmin ? 'd-grid-4' : 'd-grid-3'" style="margin-bottom: 18px">
       <div v-for="c in cards" :key="c.label" class="d-stat">
         <div class="label"><van-icon :name="c.icon" size="15" /> {{ c.label }}</div>
         <div class="value" :style="c.warn ? { color: '#e07a00' } : {}">
           {{ c.value }}<span v-if="c.unit" class="unit">{{ c.unit }}</span>
         </div>
+        <div v-if="c.sub" class="label" style="margin-top: 6px">{{ c.sub }}</div>
       </div>
     </div>
 
