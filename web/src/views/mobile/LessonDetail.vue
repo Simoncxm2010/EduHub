@@ -10,6 +10,7 @@ import { ATTEND_STATUS, cnDate, endTime, fmtDate, LESSON_STATUS } from '../../ut
 import { uploadImage } from '../../utils/image';
 import SignaturePad from '../../components/SignaturePad.vue';
 import PhotoField from '../../components/PhotoField.vue';
+import RescheduleDialog from '../../components/RescheduleDialog.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -250,6 +251,8 @@ async function removeLesson() {
 
 /* 复制本节课到另一天（不带走签到与留痕） */
 const showDupCal = ref(false);
+/** 调课弹窗（改期 / 换教室 / 与另一节课对调） */
+const showReschedule = ref(false);
 const duplicating = ref(false);
 
 async function duplicateTo(date) {
@@ -309,6 +312,11 @@ function preview(url) {
             @click="setStatus('canceled')"
           >取消课时</van-button>
           <van-button v-else size="small" round plain icon="revoke" @click="setStatus('scheduled')">恢复排课</van-button>
+          <van-button
+            v-if="detail.lesson.status !== 'canceled'"
+            size="small" round type="primary" icon="exchange"
+            @click="showReschedule = true"
+          >调课</van-button>
           <van-button size="small" round plain icon="plus" @click="showDupCal = true">复制到其他日期</van-button>
           <van-button size="small" round plain type="danger" icon="delete-o" @click="removeLesson">删除</van-button>
         </div>
@@ -572,6 +580,13 @@ function preview(url) {
       :max-date="new Date(2032, 11, 31)"
       :title="`复制「${detail?.lesson.class_name || ''}」到哪一天？`"
       @confirm="duplicateTo"
+    />
+
+    <RescheduleDialog
+      v-if="detail"
+      v-model:show="showReschedule"
+      :lesson="detail.lesson"
+      @done="load"
     />
   </div>
 </template>

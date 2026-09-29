@@ -5,6 +5,7 @@ import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import Modal from '../../ui/Modal.vue';
 import AiRecognizeBox from '../../components/AiRecognizeBox.vue';
+import WindowRuleFields from '../../components/WindowRuleFields.vue';
 import { addDays, cnDate, fmtDate, WEEKDAY_SHORT } from '../../utils';
 
 const auth = useAuthStore();
@@ -18,12 +19,50 @@ const loading = ref(true);
 
 const DOW = [1, 2, 3, 4, 5, 6, 0];
 
+/** 新时段的默认规则（高级项留空 = 不限制） */
+function blankRule(weekday, start, end) {
+  return {
+    weekday, start_time: start, end_time: end, note: '',
+    valid_from: null, valid_to: null, week_parity: 'all', specific_date: null,
+    min_duration: 0, max_duration: 0,
+  };
+}
+
+/** 只把服务端认识的字段发上去（去掉 id / source 这类只读字段） */
+function toRulePayload(w) {
+  return {
+    weekday: w.weekday,
+    start_time: w.start_time,
+    end_time: w.end_time,
+    note: w.note || '',
+    valid_from: w.valid_from || null,
+    valid_to: w.valid_to || null,
+    week_parity: w.week_parity || 'all',
+    specific_date: w.specific_date || null,
+    min_duration: Number(w.min_duration) || 0,
+    max_duration: Number(w.max_duration) || 0,
+  };
+}
+
+/**
+ * 给草稿数组补上 index。
+ * 之前这里用 map 生成 { ...w, index } 的副本给模板，v-model 写的是副本，
+ * 保存时读的却还是 draft —— 改了时间再保存会「看着改了、其实没存」。
+ * 现在模板直接绑草稿里的对象，只用 index 定位删除。
+ */
+function reindex(arr) {
+  arr.forEach((w, i) => { w.index = i; });
+}
+reindex(draft.value);
+
 async function load() {
   loading.value = true;
   try {
     const d = await api.get('/availability');
     windows.value = d.windows;
     draft.value = d.windows.map((w) => ({ ...w }));
+    reindex(draft.value);
+    gapMin.value = d.min_gap_min || 0;
   } catch (e) {
     toastError(e);
   } finally {
@@ -40,7 +79,8 @@ function addWindow(weekday) {
   const last = sameDay[sameDay.length - 1];
   const start = last ? last.end_time : '18:00';
   const end = last ? minToTimeSafe(toMinSafe(last.end_time) + 120) : '21:00';
-  draft.value.push({ weekday, start_time: start, end_time: end });
+  draft.value.push(blankRule(weekday, start, end));
+  reindex(draft.value);
 }
 
 function minToTimeSafe(m) {
@@ -54,24 +94,28 @@ function toMinSafe(t) {
 
 function removeWindow(index) {
   draft.value.splice(index, 1);
+  reindex(draft.value);
 }
 
+/** 把某一天的时段（含规则）复制到全周 */
 function copyToAllDays() {
   const src = draft.value.filter((w) => w.weekday === draft.value[0]?.weekday);
   if (!src.length) return showToast('先在某一天添加一个时段');
   const out = [];
-  for (const d of DOW) for (const w of src) out.push({ weekday: d, start_time: w.start_time, end_time: w.end_time });
+  for (const d of DOW) {
+    for (const w of src) out.push({ ...toRulePayload(w), weekday: d, specific_date: null });
+  }
   draft.value = out;
+  reindex(draft.value);
 }
 
 async function save() {
   saving.value = true;
   try {
-    const d = await api.put('/availability', {
-      windows: draft.value.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time })),
-    });
+    const d = await api.put('/availability', { windows: draft.value.map(toRulePayload) });
     windows.value = d.windows;
     draft.value = d.windows.map((w) => ({ ...w }));
+    reindex(draft.value);
     showToast({ type: 'success', message: '时段已保存' });
     if (selectedClassId.value) match();
   } catch (e) {
@@ -81,9 +125,27 @@ async function save() {
   }
 }
 
+/* ---------------- 排课偏好：两节课之间的最短间隔 ---------------- */
+const gapMin = ref(0);
+const savingGap = ref(false);
+
+async function saveGap() {
+  savingGap.value = true;
+  try {
+    const d = await api.put('/availability/settings', { min_gap_min: Number(gapMin.value) || 0 });
+    gapMin.value = d.min_gap_min;
+    showToast({ type: 'success', message: d.min_gap_min ? `已设为 ${d.min_gap_min} 分钟` : '已取消间隔要求' });
+    if (selectedClassId.value) match();
+  } catch (e) {
+    toastError(e);
+  } finally {
+    savingGap.value = false;
+  }
+}
+
 const grouped = computed(() => DOW.map((d) => ({
   weekday: d,
-  items: draft.value.map((w, i) => ({ ...w, index: i })).filter((w) => w.weekday === d),
+  items: draft.value.filter((w) => w.weekday === d),
 })));
 
 /* ---------------- 智能协调 ---------------- */
@@ -220,21 +282,24 @@ const stuAi = ref(null);
 
 const editGrouped = computed(() => DOW.map((d) => ({
   weekday: d,
-  items: editDraft.value.map((w, i) => ({ ...w, index: i })).filter((w) => w.weekday === d),
+  items: editDraft.value.filter((w) => w.weekday === d),
 })));
 
 /** 识别结果只填草稿，仍要点保存才落库 */
 function applyMyWindows(windows) {
-  draft.value = windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
+  draft.value = windows.map((w) => ({ ...blankRule(w.weekday, w.start_time, w.end_time), note: w.note || '' }));
+  reindex(draft.value);
 }
 
 function applyStuWindows(windows) {
-  editDraft.value = windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
+  editDraft.value = windows.map((w) => ({ ...blankRule(w.weekday, w.start_time, w.end_time), note: w.note || '' }));
+  reindex(editDraft.value);
 }
 
 function openEditor(s) {
   editing.value = s;
-  editDraft.value = s.windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
+  editDraft.value = s.windows.map((w) => ({ ...w }));
+  reindex(editDraft.value);
   stuAi.value?.reset();
   showEditor.value = true;
 }
@@ -242,18 +307,24 @@ function openEditor(s) {
 function addEditWindow(weekday) {
   const sameDay = editDraft.value.filter((w) => w.weekday === weekday);
   const last = sameDay[sameDay.length - 1];
-  editDraft.value.push({
+  editDraft.value.push(blankRule(
     weekday,
-    start_time: last ? last.end_time : '18:00',
-    end_time: minToTimeSafe(last ? toMinSafe(last.end_time) + 120 : 21 * 60),
-  });
+    last ? last.end_time : '18:00',
+    minToTimeSafe(last ? toMinSafe(last.end_time) + 120 : 21 * 60)
+  ));
+  reindex(editDraft.value);
+}
+
+function removeEditWindow(index) {
+  editDraft.value.splice(index, 1);
+  reindex(editDraft.value);
 }
 
 async function saveStudentWindows() {
   editSaving.value = true;
   try {
     await api.put(`/availability/student/${editing.value.student_id}`, {
-      windows: editDraft.value.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time })),
+      windows: editDraft.value.map(toRulePayload),
     });
     showToast({ type: 'success', message: `已保存 ${editing.value.name} 的时段` });
     showEditor.value = false;
@@ -297,11 +368,14 @@ async function saveStudentWindows() {
                 <button class="d-btn sm ghost" @click="addWindow(g.weekday)">+ 添加</button>
               </div>
               <div v-if="!g.items.length" class="aw-none">未设置</div>
-              <div v-for="w in g.items" :key="w.index" class="aw-item">
-                <input v-model="w.start_time" type="time" class="d-input" style="width: 108px" />
-                <span style="color: #98a1b5">–</span>
-                <input v-model="w.end_time" type="time" class="d-input" style="width: 108px" />
-                <button class="d-btn sm danger" @click="removeWindow(w.index)">删</button>
+              <div v-for="w in g.items" :key="w.index" class="aw-item-wrap">
+                <div class="aw-item">
+                  <input v-model="w.start_time" type="time" class="d-input" style="width: 108px" />
+                  <span style="color: #98a1b5">–</span>
+                  <input v-model="w.end_time" type="time" class="d-input" style="width: 108px" />
+                  <button class="d-btn sm danger" @click="removeWindow(w.index)">删</button>
+                </div>
+                <WindowRuleFields :rule="w" />
               </div>
             </div>
           </div>
@@ -314,6 +388,22 @@ async function saveStudentWindows() {
               : '说说你什么时候有空，例如：周二、周四晚上6点半到9点有空，周六上午9点到11点也行'"
             @recognized="applyMyWindows"
           />
+        </div>
+
+        <div class="d-card">
+          <div class="d-card-title">
+            <span>排课偏好</span>
+            <span class="d-badge mute">冲突检测与智能协调都会遵守</span>
+          </div>
+          <div class="d-inline" style="gap: 10px; flex-wrap: wrap">
+            <span style="font-size: 13.5px">两节课之间最少间隔</span>
+            <input v-model.number="gapMin" type="number" min="0" max="240" step="5" class="d-input" style="width: 96px" />
+            <span style="font-size: 13.5px">分钟</span>
+            <button class="d-btn sm primary" :disabled="savingGap" @click="saveGap">保存</button>
+            <span class="muted" style="font-size: 12.5px">
+              用来留出课间赶路、休息的时间；填 0 表示不限制
+            </span>
+          </div>
         </div>
 
         <div class="d-card">
@@ -471,12 +561,15 @@ async function saveStudentWindows() {
             <button class="d-btn sm ghost" @click="addEditWindow(g.weekday)">+ 添加</button>
           </div>
           <div v-if="!g.items.length" class="aw-none">未设置</div>
-          <div v-for="w in g.items" :key="w.index" class="aw-item">
-            <input v-model="w.start_time" type="time" class="d-input" style="width: 108px" />
-            <span style="color: #98a1b5">–</span>
-            <input v-model="w.end_time" type="time" class="d-input" style="width: 108px" />
-            <button class="d-btn sm danger" @click="editDraft.splice(w.index, 1)">删</button>
-          </div>
+            <div v-for="w in g.items" :key="w.index" class="aw-item-wrap">
+              <div class="aw-item">
+                <input v-model="w.start_time" type="time" class="d-input" style="width: 108px" />
+                <span style="color: #98a1b5">–</span>
+                <input v-model="w.end_time" type="time" class="d-input" style="width: 108px" />
+                <button class="d-btn sm danger" @click="removeEditWindow(w.index)">删</button>
+              </div>
+              <WindowRuleFields :rule="w" />
+            </div>
         </div>
       </div>
 
@@ -514,7 +607,8 @@ async function saveStudentWindows() {
 .aw-day { border: 1px solid #f0f2f8; border-radius: 10px; padding: 10px 12px; }
 .aw-day-head { display: flex; align-items: center; justify-content: space-between; font-size: 13.5px; font-weight: 600; margin-bottom: 8px; }
 .aw-none { font-size: 12.5px; color: #b6bdcc; padding: 4px 0; }
-.aw-item { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.aw-item { display: flex; align-items: center; gap: 8px; }
+.aw-item-wrap { margin-bottom: 8px; }
 .sw-list { display: flex; flex-direction: column; }
 .sw-row { padding: 10px 0; border-bottom: 1px solid #f1f3f9; }
 .sw-row:last-child { border-bottom: none; }

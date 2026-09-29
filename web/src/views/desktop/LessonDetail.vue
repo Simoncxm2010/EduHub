@@ -10,6 +10,7 @@ import PhotoField from '../../components/PhotoField.vue';
 import { ATTEND_STATUS, cnDate, endTime, fmtDate, LESSON_STATUS, BADGE } from '../../utils';
 import { uploadImage } from '../../utils/image';
 import { useBack } from '../../composables/back';
+import RescheduleDialog from '../../components/RescheduleDialog.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -23,6 +24,8 @@ const record = reactive({ content: '', homework: '' });
 const savingRecord = ref(false);
 const savingAttend = ref(false);
 const savingTrace = ref(false);
+/** 调课弹窗（改期 / 换教室 / 与另一节课对调） */
+const showReschedule = ref(false);
 
 const attendMap = reactive({});
 const signMap = reactive({});
@@ -279,6 +282,11 @@ function preview(url) {
             <button v-else class="d-btn" @click="setStatus('scheduled')">恢复待上课</button>
             <button v-if="detail.lesson.status !== 'canceled'" class="d-btn" @click="setStatus('canceled')">取消课时</button>
             <button v-else class="d-btn" @click="setStatus('scheduled')">恢复排课</button>
+            <button
+              v-if="detail.lesson.status !== 'canceled'"
+              class="d-btn primary"
+              @click="showReschedule = true"
+            >调课</button>
             <button class="d-btn" @click="showDup = true">复制到其他日期</button>
             <button class="d-btn danger" @click="removeLesson">删除</button>
           </template>
@@ -536,5 +544,12 @@ function preview(url) {
         <button class="d-btn primary" :disabled="leave.saving" @click="submitLeave">提交申请</button>
       </template>
     </Modal>
+
+    <RescheduleDialog
+      v-if="detail"
+      v-model:show="showReschedule"
+      :lesson="detail.lesson"
+      @done="load"
+    />
   </div>
 </template>
