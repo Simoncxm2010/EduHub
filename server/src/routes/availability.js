@@ -147,9 +147,10 @@ router.put('/student/:studentId', teacherOnly, h(async (req, res) => {
 
 /**
  * 大模型识别接口（预留）：把自然语言描述或聊天截图转成时段建议。
- * 只返回建议、不落库，老师确认后再调 PUT /student/:id 保存。
+ * 老师与学生都能用：老师用来代填/核对，学生用来把自己的口语描述变成时段。
+ * 只返回建议、不落库，确认后再调 PUT / 或 PUT /student/:id 保存。
  */
-router.post('/recognize', teacherOnly, h(async (req, res) => {
+router.post('/recognize', h(async (req, res) => {
   const text = String(req.body?.text || '').trim().slice(0, 2000);
   const rawImage = typeof req.body?.image === 'string' ? req.body.image : '';
   if (!text && !rawImage) throw new ApiError(400, '请提供文字描述或图片');

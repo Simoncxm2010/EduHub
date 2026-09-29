@@ -4,6 +4,7 @@ import { showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import Modal from '../../ui/Modal.vue';
+import AiRecognizeBox from '../../components/AiRecognizeBox.vue';
 import { addDays, cnDate, fmtDate, WEEKDAY_SHORT } from '../../utils';
 
 const auth = useAuthStore();
@@ -213,24 +214,28 @@ const editing = ref(null);
 const editDraft = ref([]);
 const editSaving = ref(false);
 
-/** 智能识别（大模型接口预留；未配置时走内置规则解析） */
-const aiText = ref('');
-const aiImage = ref('');
-const aiBusy = ref(false);
-const aiReply = ref(null);
-const llmInfo = ref(null);
+/** 两处「智能识别」输入框：我的时段 / 代填学生 */
+const myAi = ref(null);
+const stuAi = ref(null);
 
 const editGrouped = computed(() => DOW.map((d) => ({
   weekday: d,
   items: editDraft.value.map((w, i) => ({ ...w, index: i })).filter((w) => w.weekday === d),
 })));
 
+/** 识别结果只填草稿，仍要点保存才落库 */
+function applyMyWindows(windows) {
+  draft.value = windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
+}
+
+function applyStuWindows(windows) {
+  editDraft.value = windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
+}
+
 function openEditor(s) {
   editing.value = s;
   editDraft.value = s.windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
-  aiText.value = '';
-  aiImage.value = '';
-  aiReply.value = null;
+  stuAi.value?.reset();
   showEditor.value = true;
 }
 
@@ -242,36 +247,6 @@ function addEditWindow(weekday) {
     start_time: last ? last.end_time : '18:00',
     end_time: minToTimeSafe(last ? toMinSafe(last.end_time) + 120 : 21 * 60),
   });
-}
-
-function pickAiImage(e) {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  if (file.size > 4 * 1024 * 1024) return showToast('图片请控制在 4MB 以内');
-  const reader = new FileReader();
-  reader.onload = () => { aiImage.value = String(reader.result); };
-  reader.readAsDataURL(file);
-}
-
-async function recognize() {
-  if (!aiText.value.trim() && !aiImage.value) return showToast('先粘贴一段描述，或选一张聊天截图');
-  aiBusy.value = true;
-  try {
-    const d = await api.post('/availability/recognize', { text: aiText.value, image: aiImage.value });
-    aiReply.value = d;
-    llmInfo.value = d.llm;
-    if (d.windows.length) {
-      // 识别结果直接铺进草稿，老师确认后再保存，不直接落库
-      editDraft.value = d.windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
-      showToast({ type: 'success', message: `识别到 ${d.windows.length} 个时段，已填入下方` });
-    } else {
-      showToast('没能识别出可用时段，试试写得更具体些');
-    }
-  } catch (e) {
-    toastError(e);
-  } finally {
-    aiBusy.value = false;
-  }
 }
 
 async function saveStudentWindows() {
@@ -330,6 +305,15 @@ async function saveStudentWindows() {
               </div>
             </div>
           </div>
+
+          <!-- 学生也能用：把自己的口语描述直接转成上面的时段 -->
+          <AiRecognizeBox
+            ref="myAi"
+            :placeholder="auth.canTeach
+              ? '说说你什么时候能上课，例如：周二、周四晚上6点半到9点有空'
+              : '说说你什么时候有空，例如：周二、周四晚上6点半到9点有空，周六上午9点到11点也行'"
+            @recognized="applyMyWindows"
+          />
         </div>
 
         <div class="d-card">
@@ -496,43 +480,12 @@ async function saveStudentWindows() {
         </div>
       </div>
 
-      <!-- 大模型识别：贴一段话或截图，自动转成上面的时段 -->
-      <div class="ai-box">
-        <div class="ai-box-head">
-          <span><van-icon name="bulb-o" /> 智能识别</span>
-          <span class="d-badge" :class="llmInfo?.configured ? 'ok' : 'mute'">
-            {{ llmInfo?.configured ? `大模型 · ${llmInfo.model}` : '内置规则解析' }}
-          </span>
-        </div>
-        <textarea
-          v-model="aiText"
-          class="d-textarea"
-          style="min-height: 68px"
-          placeholder="把学生的原话贴进来，例如：周二、周四晚上6点半到9点有空，周六上午9点到11点也行"
-        />
-        <div class="ai-actions">
-          <label class="d-btn sm">
-            选聊天截图
-            <input type="file" accept="image/png,image/jpeg,image/webp" style="display: none" @change="pickAiImage" />
-          </label>
-          <span v-if="aiImage" class="d-badge info">已选图片</span>
-          <div style="flex: 1" />
-          <button class="d-btn sm primary" :disabled="aiBusy" @click="recognize">
-            {{ aiBusy ? '识别中…' : '识别并填入' }}
-          </button>
-        </div>
-        <div v-if="aiReply" class="ai-reply">
-          <div v-if="aiReply.warnings?.length" class="ai-note warn">
-            <van-icon name="warning-o" /> {{ aiReply.warnings.join('；') }}
-          </div>
-          <div v-else class="ai-note">
-            识别来源：{{ aiReply.provider === 'llm' ? '大模型' : aiReply.provider === 'llm+rule' ? '大模型（含规则兜底）' : '内置规则' }}
-          </div>
-        </div>
-        <div v-if="!llmInfo?.configured" class="ai-hint">
-          未配置大模型接口（EDUHUB_LLM_API_KEY），当前用内置规则解析文字；图片需要配置接口后才能识别。
-        </div>
-      </div>
+      <!-- 智能识别：把学生的原话/截图直接转成上面的时段 -->
+      <AiRecognizeBox
+        ref="stuAi"
+        placeholder="把学生的原话贴进来，例如：周二、周四晚上6点半到9点有空，周六上午9点到11点也行"
+        @recognized="applyStuWindows"
+      />
 
       <template #footer>
         <button class="d-btn" @click="showEditor = false">取消</button>
@@ -572,12 +525,7 @@ async function saveStudentWindows() {
 .d-list-hint p { font-size: 13px; line-height: 1.75; color: #4a5470; margin: 0 0 10px; }
 .d-list-hint p:last-child { margin-bottom: 0; }
 
-/* 智能识别区块 */
-.ai-box { margin-top: 16px; padding: 12px; border: 1px solid #e8ecf6; border-radius: 10px; background: #fafbff; }
-.ai-box-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; margin-bottom: 8px; }
-.ai-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.ai-reply { margin-top: 8px; }
+/* 智能识别框本体在 AiRecognizeBox 组件里，这里只留编辑器内的覆盖提示 */
 .ai-note { font-size: 12.5px; color: #4a5470; padding: 7px 10px; border-radius: 8px; background: #eef2ff; }
 .ai-note.warn { background: #fff7e8; color: #b26a00; margin-bottom: 10px; }
-.ai-hint { font-size: 12px; color: #98a1b5; margin-top: 8px; line-height: 1.6; }
 </style>

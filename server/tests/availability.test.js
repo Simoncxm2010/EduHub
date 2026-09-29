@@ -284,9 +284,23 @@ describe('大模型识别接口（预留）', () => {
     assert.equal(bad.status, 400);
   });
 
-  it('学生不能调用识别接口', async () => {
-    const r = await api('POST', '/api/availability/recognize', studentToken, { text: '周二 18:00-20:00' });
-    assert.equal(r.status, 403);
+  it('学生也能用识别接口（把自己的口语描述转成时段）', async () => {
+    const r = await api('POST', '/api/availability/recognize', studentToken, {
+      text: '我周二、周四晚上6点半到9点有空，周六上午9点到11点也行',
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(
+      r.data.windows.map((w) => `${w.weekday} ${w.start_time}-${w.end_time}`),
+      ['2 18:30-21:00', '4 18:30-21:00', '6 09:00-11:00']
+    );
+    // 识别结果不落库：学生自己的时段仍是空的
+    const mine = await api('GET', '/api/availability', studentToken);
+    assert.deepEqual(mine.data.windows, []);
+  });
+
+  it('未登录不能调用识别接口', async () => {
+    const r = await api('POST', '/api/availability/recognize', null, { text: '周二 18:00-20:00' });
+    assert.equal(r.status, 401);
   });
 });
 
