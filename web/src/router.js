@@ -6,6 +6,7 @@ const routes = [
   { path: '/register', component: () => import('./views/Register.vue'), meta: { public: true } },
   { path: '/', component: () => import('./views/Dashboard.vue') },
   { path: '/schedule', component: () => import('./views/Schedule.vue') },
+  { path: '/rooms', component: () => import('./views/Rooms.vue') },
   { path: '/classes', component: () => import('./views/Classes.vue') },
   { path: '/classes/:id', component: () => import('./views/ClassDetail.vue') },
   { path: '/lessons/:id', component: () => import('./views/LessonDetail.vue') },

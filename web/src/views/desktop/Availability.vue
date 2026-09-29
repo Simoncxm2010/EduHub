@@ -156,6 +156,8 @@ const room = ref('');
 const rangeFrom = ref(todayStr);
 const rangeTo = ref(addDays(todayStr, 20));
 const ignoreTeacher = ref(false);
+/** 连「两节课最短间隔」也一起忽略：临时加课时偶尔需要 */
+const ignoreGap = ref(false);
 const matching = ref(false);
 const result = ref(null);
 
@@ -182,6 +184,7 @@ async function match() {
         to: rangeTo.value,
         limit: 40,
         ignore_teacher_availability: ignoreTeacher.value ? 1 : 0,
+        ignore_gap: ignoreGap.value ? 1 : 0,
       },
     });
   } catch (e) {
@@ -439,6 +442,12 @@ async function saveStudentWindows() {
               <label class="d-check">
                 <input v-model="ignoreTeacher" type="checkbox" />
                 忽略我的可授课时段（按 08:00–22:00）
+              </label>
+            </div>
+            <div class="d-field" style="justify-content: flex-end">
+              <label class="d-check" :title="`当前设置的最短间隔：${gapMin} 分钟`">
+                <input v-model="ignoreGap" type="checkbox" />
+                忽略最短间隔（{{ gapMin }} 分钟）
               </label>
             </div>
             <div class="d-field" style="justify-content: flex-end">

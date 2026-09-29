@@ -34,6 +34,67 @@ async function loadChanges() {
   }
 }
 
+/* ---------------- 课时包与待补课 ---------------- */
+const showEdit = ref(false);
+const editTarget = ref(null);
+const savingEdit = ref(false);
+const editForm = ref({ name: '', phone: '', guardian_phone: '', remark: '', lessons_total: 0, lessons_bonus: 0 });
+
+function openStudentEdit(s) {
+  editTarget.value = s;
+  editForm.value = {
+    name: s.name,
+    phone: s.phone || '',
+    guardian_phone: s.guardian_phone || '',
+    remark: s.remark || '',
+    lessons_total: s.credits.lessons_total,
+    lessons_bonus: s.credits.lessons_bonus,
+  };
+  showEdit.value = true;
+}
+
+async function saveStudentEdit() {
+  if (!editForm.value.name.trim()) return showToast('请填写学生姓名');
+  savingEdit.value = true;
+  try {
+    await api.put(`/classes/${classId}/students/${editTarget.value.id}`, editForm.value);
+    showToast({ type: 'success', message: '已保存' });
+    showEdit.value = false;
+    await load();
+    if (makeups.value) loadMakeups();
+  } catch (e) {
+    toastError(e);
+  } finally {
+    savingEdit.value = false;
+  }
+}
+
+const makeups = ref(null);
+const loadingMakeups = ref(false);
+
+async function loadMakeups() {
+  loadingMakeups.value = true;
+  try {
+    const d = await api.get('/lessons/makeups', { params: { class_id: classId, limit: 60 } });
+    makeups.value = d.makeups;
+  } catch (e) {
+    toastError(e);
+  } finally {
+    loadingMakeups.value = false;
+  }
+}
+
+async function settleMakeup(m, status) {
+  try {
+    await api.put(`/lessons/makeups/${m.id}`, { status });
+    showToast({ type: 'success', message: status === 'done' ? '已记为补课完成' : '已标记免补' });
+    await loadMakeups();
+    load();
+  } catch (e) {
+    toastError(e);
+  }
+}
+
 /* 收费结算（按学生月度统计） */
 const billMonth = ref(fmtDate(new Date()).slice(0, 7));
 const billing = ref(null);
@@ -127,7 +188,7 @@ async function copyCode() {
 
 /* 学生管理（教师） */
 const showAdd = ref(false);
-const form = ref({ name: '', phone: '', remark: '' });
+const form = ref({ name: '', phone: '', guardian_phone: '', remark: '', lessons_total: 0, lessons_bonus: 0 });
 const saving = ref(false);
 
 async function addStudent() {
@@ -216,10 +277,16 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
               <div class="attend-name">
                 <span>{{ s.name }}</span>
                 <van-tag v-if="s.phone" plain>{{ s.phone }}</van-tag>
+                <van-tag v-if="s.guardian_phone" plain>家长 {{ s.guardian_phone }}</van-tag>
               </div>
               <div class="attend-actions">
-                <van-tag v-if="s.user_id" plain type="success">已绑定账号</van-tag>
+                <van-tag v-if="s.credits.lessons_total" :type="s.credits.owed ? 'danger' : s.credits.low ? 'warning' : 'success'" plain>
+                  余 {{ s.credits.remaining }}
+                </van-tag>
+                <van-tag v-if="s.owed_makeups" type="warning" plain>欠 {{ s.owed_makeups }}</van-tag>
+                <van-tag v-if="s.user_id" plain type="success">已绑定</van-tag>
                 <span v-else class="muted">未绑定</span>
+                <van-icon v-if="auth.canTeach" name="setting-o" size="18" style="cursor: pointer" @click="openStudentEdit(s)" />
                 <van-icon v-if="auth.canTeach" name="delete-o" color="#ee0a24" size="18" style="cursor: pointer" @click="removeStudent(s)" />
               </div>
             </div>
@@ -227,6 +294,36 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
           </div>
         </div>
       </div>
+
+      <template v-if="auth.canTeach">
+        <div class="section-head">
+          <span>待补课</span>
+          <span class="muted link" @click="loadMakeups">
+            {{ makeups ? `${makeups.filter((m) => m.status === 'pending').length} 节待补` : '查看' }}
+          </span>
+        </div>
+        <div class="card">
+          <div v-if="!makeups" class="muted" style="text-align: center; padding: 12px 0">
+            学生请假后会自动记一笔待补课
+          </div>
+          <div v-else-if="!makeups.length" class="muted" style="text-align: center; padding: 12px 0">没有欠课</div>
+          <div v-else>
+            <div v-for="m in makeups" :key="m.id" class="attend-row">
+              <div class="attend-name">
+                <span>{{ m.student_name }}</span>
+                <van-tag :type="m.status === 'pending' ? 'warning' : m.status === 'done' ? 'success' : 'default'" plain>
+                  {{ { pending: '待补', scheduled: '已约', done: '已补', waived: '免补' }[m.status] }}
+                </van-tag>
+                <span class="muted" style="font-size: 12px">缺 {{ m.missed_date }}</span>
+              </div>
+              <div class="attend-actions">
+                <van-button v-if="m.status !== 'done'" size="mini" round type="primary" plain @click="settleMakeup(m, 'done')">已补</van-button>
+                <van-button v-if="m.status === 'pending'" size="mini" round plain @click="settleMakeup(m, 'waived')">免补</van-button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
 
       <template v-if="auth.canTeach && stats">
         <div class="section-head">
@@ -345,11 +442,45 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
       <van-cell-group inset>
         <van-field v-model="form.name" label="姓名" placeholder="学生姓名" clearable />
         <van-field v-model="form.phone" label="手机号" placeholder="选填" clearable />
+        <van-field v-model="form.guardian_phone" label="家长电话" placeholder="选填" clearable />
+        <van-field v-model.number="form.lessons_total" type="digit" label="购买课时" placeholder="0 = 未购课时包" />
+        <van-field v-model.number="form.lessons_bonus" type="digit" label="赠送课时" placeholder="选填" />
         <van-field v-model="form.remark" label="备注" placeholder="选填" clearable />
       </van-cell-group>
       <div class="muted" style="margin: 10px 20px 0">学生也可以自行注册后用邀请码加入班级。</div>
       <div style="margin: 16px">
         <van-button round block type="primary" :loading="saving" @click="addStudent">添加</van-button>
+      </div>
+    </van-popup>
+
+    <van-popup
+      v-model:show="showEdit"
+      round
+      class="eduhub-popup"
+      :position="isDesktop ? 'center' : 'bottom'"
+      style="padding: 18px 4px 24px"
+    >
+      <div class="form-title">课时与资料 · {{ editTarget?.name }}</div>
+      <van-cell-group inset>
+        <van-field v-model="editForm.name" label="姓名" clearable />
+        <van-field v-model="editForm.phone" label="手机号" placeholder="选填" clearable />
+        <van-field v-model="editForm.guardian_phone" label="家长电话" placeholder="选填" clearable />
+        <van-field v-model.number="editForm.lessons_total" type="digit" label="购买课时" />
+        <van-field v-model.number="editForm.lessons_bonus" type="digit" label="赠送课时" />
+        <van-field v-model="editForm.remark" label="备注" placeholder="选填" clearable />
+      </van-cell-group>
+      <div v-if="editTarget" style="margin: 12px 20px 0; display: flex; gap: 6px; flex-wrap: wrap">
+        <van-tag :type="editTarget.credits.owed ? 'danger' : editTarget.credits.low ? 'warning' : 'success'" plain>
+          剩余 {{ editTarget.credits.remaining }} 节
+        </van-tag>
+        <van-tag plain>已消 {{ editTarget.credits.used }} 节</van-tag>
+        <van-tag v-if="editTarget.owed_makeups" type="warning" plain>待补 {{ editTarget.owed_makeups }} 节</van-tag>
+      </div>
+      <div class="muted" style="margin: 10px 20px 0; font-size: 12px">
+        已消课时 = 已完成课时里的出勤/迟到/缺勤；请假不扣，改为计入待补课
+      </div>
+      <div style="margin: 16px">
+        <van-button round block type="primary" :loading="savingEdit" @click="saveStudentEdit">保存</van-button>
       </div>
     </van-popup>
   </div>

@@ -25,6 +25,8 @@ const rangeFrom = ref(todayStr);
 const rangeTo = ref(addDays(todayStr, 20));
 const matching = ref(false);
 const result = ref(null);
+/** 连「两节课最短间隔」也一起忽略 */
+const ignoreGap = ref(false);
 
 const showBook = ref(false);
 const bookSlot = ref(null);
@@ -146,7 +148,7 @@ async function match() {
   matching.value = true;
   try {
     result.value = await api.get('/availability/match', {
-      params: { class_id: classId.value, duration_min: duration.value, room: room.value, from: rangeFrom.value, to: rangeTo.value, limit: 30 },
+      params: { class_id: classId.value, duration_min: duration.value, room: room.value, from: rangeFrom.value, to: rangeTo.value, limit: 30, ignore_gap: ignoreGap.value ? 1 : 0 },
     });
   } catch (e) {
     toastError(e);
@@ -356,6 +358,11 @@ async function saveStudentWindows() {
           <template #input><input v-model="rangeTo" type="date" class="d-input" /></template>
         </van-field>
         <van-field v-model="room" label="教室" placeholder="选填" />
+        <van-cell v-if="auth.canTeach" center title="忽略最短间隔" :label="`当前设置 ${gapMin} 分钟，临时加课时可用`">
+          <template #right-icon>
+            <van-switch v-model="ignoreGap" size="20" />
+          </template>
+        </van-cell>
       </van-cell-group>
       <div style="margin-top: 14px">
         <van-button round block type="primary" :loading="matching" @click="match">开始匹配</van-button>
