@@ -132,6 +132,103 @@ async function submitBook() {
     booking.value = false;
   }
 }
+
+/* ---------------- 老师代学生填写时段 ---------------- */
+const students = ref(null);
+const loadingStudents = ref(false);
+const showEditor = ref(false);
+const editing = ref(null);
+const editDraft = ref([]);
+const editSaving = ref(false);
+
+/** 智能识别（大模型接口预留；未配置时走内置规则解析） */
+const aiText = ref('');
+const aiImage = ref('');
+const aiBusy = ref(false);
+const aiReply = ref(null);
+const llmInfo = ref(null);
+
+const editGrouped = computed(() => DOW.map((d) => ({
+  weekday: d,
+  items: editDraft.value.map((w, i) => ({ ...w, index: i })).filter((w) => w.weekday === d),
+})));
+
+async function loadStudents() {
+  if (!classId.value) return showToast('请先选择班级');
+  loadingStudents.value = true;
+  try {
+    const d = await api.get(`/availability/class/${classId.value}`);
+    students.value = d.students;
+  } catch (e) {
+    toastError(e);
+  } finally {
+    loadingStudents.value = false;
+  }
+}
+
+function openEditor(s) {
+  editing.value = s;
+  editDraft.value = s.windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
+  aiText.value = '';
+  aiImage.value = '';
+  aiReply.value = null;
+  showEditor.value = true;
+}
+
+function addEditWindow(weekday) {
+  const sameDay = editDraft.value.filter((w) => w.weekday === weekday);
+  const last = sameDay[sameDay.length - 1];
+  editDraft.value.push({
+    weekday,
+    start_time: last ? last.end_time : '18:00',
+    end_time: minToTime(last ? toMin(last.end_time) + 120 : 21 * 60),
+  });
+}
+
+function pickAiImage(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  if (file.size > 4 * 1024 * 1024) return showToast('图片请控制在 4MB 以内');
+  const reader = new FileReader();
+  reader.onload = () => { aiImage.value = String(reader.result); };
+  reader.readAsDataURL(file);
+}
+
+async function recognize() {
+  if (!aiText.value.trim() && !aiImage.value) return showToast('先粘贴一段描述，或选一张聊天截图');
+  aiBusy.value = true;
+  try {
+    const d = await api.post('/availability/recognize', { text: aiText.value, image: aiImage.value });
+    aiReply.value = d;
+    llmInfo.value = d.llm;
+    if (d.windows.length) {
+      editDraft.value = d.windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
+      showToast({ type: 'success', message: `识别到 ${d.windows.length} 个时段，已填入` });
+    } else {
+      showToast('没能识别出可用时段');
+    }
+  } catch (e) {
+    toastError(e);
+  } finally {
+    aiBusy.value = false;
+  }
+}
+
+async function saveStudentWindows() {
+  editSaving.value = true;
+  try {
+    await api.put(`/availability/student/${editing.value.student_id}`, {
+      windows: editDraft.value.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time })),
+    });
+    showToast({ type: 'success', message: '已保存' });
+    showEditor.value = false;
+    await loadStudents();
+  } catch (e) {
+    toastError(e);
+  } finally {
+    editSaving.value = false;
+  }
+}
 </script>
 
 <template>
@@ -191,6 +288,34 @@ async function submitBook() {
       </div>
     </div>
 
+    <!-- 学生时段：老师可以替没账号 / 不会填的学生代填 -->
+    <div v-if="auth.canTeach" class="card">
+      <div style="display: flex; align-items: center; justify-content: space-between">
+        <div style="font-size: 15px; font-weight: 600">学生时段</div>
+        <van-button size="mini" round :loading="loadingStudents" @click="loadStudents">
+          {{ students ? '刷新' : '加载' }}
+        </van-button>
+      </div>
+      <div v-if="!students" class="muted" style="margin-top: 8px">
+        学生没账号或不会填时，可以替他填，填完就能参与智能协调
+      </div>
+      <div v-else style="margin-top: 8px">
+        <div v-for="s in students" :key="s.student_id" class="stu-row">
+          <div style="display: flex; align-items: center; gap: 6px">
+            <span style="font-weight: 600; font-size: 14px">{{ s.name }}</span>
+            <van-tag :type="s.filled_by_self ? 'success' : s.windows.length ? 'primary' : 'default'" plain>
+              {{ s.filled_by_self ? '学生自填' : s.windows.length ? '老师代填' : '未填写' }}
+            </van-tag>
+            <div style="flex: 1" />
+            <van-button size="mini" plain round @click="openEditor(s)">代填</van-button>
+          </div>
+          <div v-if="s.windows.length" class="muted" style="margin-top: 4px; font-size: 12px">
+            {{ s.windows.map((w) => `周${WEEKDAY_SHORT[w.weekday]} ${w.start_time}-${w.end_time}`).join('、') }}
+          </div>
+        </div>
+      </div>
+    </div>
+
     <template v-if="result">
       <div class="section-head">
         <span>候选时段</span>
@@ -214,6 +339,72 @@ async function submitBook() {
       <van-empty v-if="!result.slots.length" image="search" description="这段时间没有合适时段" />
     </template>
 
+    <!-- 代填编辑器 -->
+    <van-popup
+      v-model:show="showEditor"
+      round
+      position="bottom"
+      style="padding: 18px 16px 24px; max-height: 88vh; overflow-y: auto"
+    >
+      <div class="form-title">代填时段 · {{ editing?.name }}</div>
+      <div class="muted" style="text-align: center; margin-bottom: 12px; font-size: 12.5px">
+        {{ editing?.has_account ? '保存后写进该学生自己的时段，他可自行调整' : '该学生没有账号，时段由你代填' }}
+      </div>
+      <div v-if="editing?.filled_by_self" class="ai-note warn" style="margin-bottom: 10px">
+        该学生自己填过时段，保存会覆盖他填写的内容
+      </div>
+
+      <div v-for="g in editGrouped" :key="g.weekday" class="aw-day">
+        <div style="display: flex; align-items: center; justify-content: space-between">
+          <span style="font-size: 13.5px; font-weight: 600">周{{ WEEKDAY_SHORT[g.weekday] }}</span>
+          <van-button size="mini" plain round @click="addEditWindow(g.weekday)">+ 添加</van-button>
+        </div>
+        <div v-if="!g.items.length" class="muted" style="padding: 6px 0">未设置</div>
+        <div v-for="w in g.items" :key="w.index" class="aw-item">
+          <input v-model="w.start_time" type="time" />
+          <span class="muted">至</span>
+          <input v-model="w.end_time" type="time" />
+          <van-button size="mini" plain round type="danger" @click="editDraft.splice(w.index, 1)">删</van-button>
+        </div>
+      </div>
+
+      <div class="ai-box">
+        <div class="ai-box-head">
+          <span><van-icon name="bulb-o" /> 智能识别</span>
+          <van-tag :type="llmInfo?.configured ? 'success' : 'default'" plain>
+            {{ llmInfo?.configured ? '大模型' : '内置规则' }}
+          </van-tag>
+        </div>
+        <van-field
+          v-model="aiText"
+          type="textarea"
+          rows="3"
+          autosize
+          placeholder="把学生的原话贴进来，例如：周二、周四晚上6点半到9点有空"
+        />
+        <div class="ai-actions">
+          <label class="d-btn sm">
+            选聊天截图
+            <input type="file" accept="image/png,image/jpeg,image/webp" style="display: none" @change="pickAiImage" />
+          </label>
+          <span v-if="aiImage" class="muted" style="font-size: 12px">已选图片</span>
+          <div style="flex: 1" />
+          <van-button size="small" round type="primary" :loading="aiBusy" @click="recognize">识别并填入</van-button>
+        </div>
+        <div v-if="aiReply?.warnings?.length" class="ai-note warn" style="margin-top: 8px">
+          {{ aiReply.warnings.join('；') }}
+        </div>
+        <div v-if="!llmInfo?.configured" class="ai-hint">
+          未配置大模型接口，当前用内置规则解析文字；图片需配置后才能识别。
+        </div>
+      </div>
+
+      <div style="margin-top: 16px; display: flex; gap: 10px">
+        <van-button round block plain @click="editDraft = []">清空</van-button>
+        <van-button round block type="primary" :loading="editSaving" @click="saveStudentWindows">保存</van-button>
+      </div>
+    </van-popup>
+
     <van-popup v-model:show="showBook" round position="bottom" style="padding: 18px 16px 24px">
       <div class="form-title">预约课程</div>
       <div v-if="bookSlot" class="muted" style="text-align: center; margin-bottom: 14px">
@@ -232,4 +423,12 @@ async function submitBook() {
 .aw-day:first-of-type { border-top: none; }
 .aw-item { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .aw-item input { flex: 1; padding: 7px 10px; border: 1px solid #d9dfec; border-radius: 8px; font-family: inherit; font-size: 14px; }
+.stu-row { padding: 9px 0; border-top: 1px solid #f1f3f8; }
+.stu-row:first-child { border-top: none; }
+.ai-box { margin-top: 14px; padding: 12px; border: 1px solid #e8ecf6; border-radius: 10px; background: #fafbff; }
+.ai-box-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; margin-bottom: 8px; }
+.ai-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ai-note { font-size: 12.5px; padding: 7px 10px; border-radius: 8px; background: #eef2ff; color: #4a5470; }
+.ai-note.warn { background: #fff7e8; color: #b26a00; }
+.ai-hint { font-size: 12px; color: #98a1b5; margin-top: 8px; line-height: 1.6; }
 </style>

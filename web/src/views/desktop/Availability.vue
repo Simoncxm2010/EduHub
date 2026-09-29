@@ -206,6 +206,90 @@ async function loadStudentWindows() {
 function isFree(windows, weekday, startMin, endMin) {
   return windows.some((w) => w.weekday === weekday && toMinSafe(w.start_time) <= startMin && toMinSafe(w.end_time) >= endMin);
 }
+
+/* ---------------- 老师代学生填写时段 ---------------- */
+const showEditor = ref(false);
+const editing = ref(null);
+const editDraft = ref([]);
+const editSaving = ref(false);
+
+/** 智能识别（大模型接口预留；未配置时走内置规则解析） */
+const aiText = ref('');
+const aiImage = ref('');
+const aiBusy = ref(false);
+const aiReply = ref(null);
+const llmInfo = ref(null);
+
+const editGrouped = computed(() => DOW.map((d) => ({
+  weekday: d,
+  items: editDraft.value.map((w, i) => ({ ...w, index: i })).filter((w) => w.weekday === d),
+})));
+
+function openEditor(s) {
+  editing.value = s;
+  editDraft.value = s.windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
+  aiText.value = '';
+  aiImage.value = '';
+  aiReply.value = null;
+  showEditor.value = true;
+}
+
+function addEditWindow(weekday) {
+  const sameDay = editDraft.value.filter((w) => w.weekday === weekday);
+  const last = sameDay[sameDay.length - 1];
+  editDraft.value.push({
+    weekday,
+    start_time: last ? last.end_time : '18:00',
+    end_time: minToTimeSafe(last ? toMinSafe(last.end_time) + 120 : 21 * 60),
+  });
+}
+
+function pickAiImage(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  if (file.size > 4 * 1024 * 1024) return showToast('图片请控制在 4MB 以内');
+  const reader = new FileReader();
+  reader.onload = () => { aiImage.value = String(reader.result); };
+  reader.readAsDataURL(file);
+}
+
+async function recognize() {
+  if (!aiText.value.trim() && !aiImage.value) return showToast('先粘贴一段描述，或选一张聊天截图');
+  aiBusy.value = true;
+  try {
+    const d = await api.post('/availability/recognize', { text: aiText.value, image: aiImage.value });
+    aiReply.value = d;
+    llmInfo.value = d.llm;
+    if (d.windows.length) {
+      // 识别结果直接铺进草稿，老师确认后再保存，不直接落库
+      editDraft.value = d.windows.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time }));
+      showToast({ type: 'success', message: `识别到 ${d.windows.length} 个时段，已填入下方` });
+    } else {
+      showToast('没能识别出可用时段，试试写得更具体些');
+    }
+  } catch (e) {
+    toastError(e);
+  } finally {
+    aiBusy.value = false;
+  }
+}
+
+async function saveStudentWindows() {
+  editSaving.value = true;
+  try {
+    await api.put(`/availability/student/${editing.value.student_id}`, {
+      windows: editDraft.value.map((w) => ({ weekday: w.weekday, start_time: w.start_time, end_time: w.end_time })),
+    });
+    showToast({ type: 'success', message: `已保存 ${editing.value.name} 的时段` });
+    showEditor.value = false;
+    await loadStudentWindows();
+    if (selectedClassId.value) match();
+  } catch (e) {
+    toastError(e);
+  } finally {
+    editSaving.value = false;
+  }
+}
 </script>
 
 <template>
@@ -350,12 +434,20 @@ function isFree(windows, weekday, startMin, endMin) {
           </div>
           <div v-if="!studentWindows" class="d-empty" style="padding: 22px 10px">
             <strong>点「查看」加载</strong>
-            了解学生什么时候有空，手动排课时更有把握
+            了解学生什么时候有空；学生没账号或不会填时，可以替他填
           </div>
           <div v-else class="sw-list">
             <div v-for="s in studentWindows" :key="s.student_id" class="sw-row">
-              <div class="sw-name">{{ s.name }}</div>
-              <div v-if="!s.windows.length" class="d-badge mute">未填写</div>
+              <div class="sw-head">
+                <span class="sw-name">{{ s.name }}</span>
+                <span class="d-badge" :class="s.filled_by_self ? 'ok' : s.windows.length ? 'info' : 'mute'">
+                  {{ s.filled_by_self ? '学生自填' : s.windows.length ? '老师代填' : '未填写' }}
+                </span>
+                <span v-if="!s.has_account" class="d-badge mute">无账号</span>
+                <div style="flex: 1" />
+                <button class="d-btn sm" @click="openEditor(s)">代填 / 编辑</button>
+              </div>
+              <div v-if="!s.windows.length" class="sw-empty">还没有时段</div>
               <div v-else class="sw-badges">
                 <span v-for="w in s.windows" :key="`${w.weekday}${w.start_time}`" class="d-badge info">
                   周{{ WEEKDAY_SHORT[w.weekday] }} {{ w.start_time }}-{{ w.end_time }}
@@ -376,6 +468,80 @@ function isFree(windows, weekday, startMin, endMin) {
         </div>
       </div>
     </div>
+
+    <Modal
+      v-model:show="showEditor"
+      :title="editing ? `代填时段 · ${editing.name}` : '代填时段'"
+      :sub="editing && !editing.has_account ? '该学生没有账号，时段由你代填' : '保存后会写进该学生自己的时段，他可自行调整'"
+      wide
+      @update:show="showEditor = $event"
+    >
+      <div v-if="editing?.filled_by_self" class="ai-note warn">
+        <van-icon name="warning-o" /> 该学生自己填过时段，保存会覆盖他填写的内容
+      </div>
+
+      <div class="aw-grid" style="margin-top: 4px">
+        <div v-for="g in editGrouped" :key="g.weekday" class="aw-day">
+          <div class="aw-day-head">
+            <span>周{{ WEEKDAY_SHORT[g.weekday] }}</span>
+            <button class="d-btn sm ghost" @click="addEditWindow(g.weekday)">+ 添加</button>
+          </div>
+          <div v-if="!g.items.length" class="aw-none">未设置</div>
+          <div v-for="w in g.items" :key="w.index" class="aw-item">
+            <input v-model="w.start_time" type="time" class="d-input" style="width: 108px" />
+            <span style="color: #98a1b5">–</span>
+            <input v-model="w.end_time" type="time" class="d-input" style="width: 108px" />
+            <button class="d-btn sm danger" @click="editDraft.splice(w.index, 1)">删</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 大模型识别：贴一段话或截图，自动转成上面的时段 -->
+      <div class="ai-box">
+        <div class="ai-box-head">
+          <span><van-icon name="bulb-o" /> 智能识别</span>
+          <span class="d-badge" :class="llmInfo?.configured ? 'ok' : 'mute'">
+            {{ llmInfo?.configured ? `大模型 · ${llmInfo.model}` : '内置规则解析' }}
+          </span>
+        </div>
+        <textarea
+          v-model="aiText"
+          class="d-textarea"
+          style="min-height: 68px"
+          placeholder="把学生的原话贴进来，例如：周二、周四晚上6点半到9点有空，周六上午9点到11点也行"
+        />
+        <div class="ai-actions">
+          <label class="d-btn sm">
+            选聊天截图
+            <input type="file" accept="image/png,image/jpeg,image/webp" style="display: none" @change="pickAiImage" />
+          </label>
+          <span v-if="aiImage" class="d-badge info">已选图片</span>
+          <div style="flex: 1" />
+          <button class="d-btn sm primary" :disabled="aiBusy" @click="recognize">
+            {{ aiBusy ? '识别中…' : '识别并填入' }}
+          </button>
+        </div>
+        <div v-if="aiReply" class="ai-reply">
+          <div v-if="aiReply.warnings?.length" class="ai-note warn">
+            <van-icon name="warning-o" /> {{ aiReply.warnings.join('；') }}
+          </div>
+          <div v-else class="ai-note">
+            识别来源：{{ aiReply.provider === 'llm' ? '大模型' : aiReply.provider === 'llm+rule' ? '大模型（含规则兜底）' : '内置规则' }}
+          </div>
+        </div>
+        <div v-if="!llmInfo?.configured" class="ai-hint">
+          未配置大模型接口（EDUHUB_LLM_API_KEY），当前用内置规则解析文字；图片需要配置接口后才能识别。
+        </div>
+      </div>
+
+      <template #footer>
+        <button class="d-btn" @click="showEditor = false">取消</button>
+        <button class="d-btn danger" @click="editDraft = []">清空</button>
+        <button class="d-btn primary" :disabled="editSaving" @click="saveStudentWindows">
+          {{ editSaving ? '保存中…' : '保存该学生时段' }}
+        </button>
+      </template>
+    </Modal>
 
     <Modal v-model:show="showBook" title="预约课程" :sub="bookSlot ? `${cnDate(bookSlot.date)} ${bookSlot.start_time} - ${bookSlot.end_time}` : ''" size="narrow" @update:show="showBook = $event">
       <div class="d-field">
@@ -399,8 +565,19 @@ function isFree(windows, weekday, startMin, endMin) {
 .sw-list { display: flex; flex-direction: column; }
 .sw-row { padding: 10px 0; border-bottom: 1px solid #f1f3f9; }
 .sw-row:last-child { border-bottom: none; }
-.sw-name { font-size: 13.5px; font-weight: 600; margin-bottom: 6px; }
+.sw-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.sw-name { font-size: 13.5px; font-weight: 600; }
+.sw-empty { font-size: 12.5px; color: #b6bdcc; }
 .sw-badges { display: flex; gap: 6px; flex-wrap: wrap; }
 .d-list-hint p { font-size: 13px; line-height: 1.75; color: #4a5470; margin: 0 0 10px; }
 .d-list-hint p:last-child { margin-bottom: 0; }
+
+/* 智能识别区块 */
+.ai-box { margin-top: 16px; padding: 12px; border: 1px solid #e8ecf6; border-radius: 10px; background: #fafbff; }
+.ai-box-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; margin-bottom: 8px; }
+.ai-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.ai-reply { margin-top: 8px; }
+.ai-note { font-size: 12.5px; color: #4a5470; padding: 7px 10px; border-radius: 8px; background: #eef2ff; }
+.ai-note.warn { background: #fff7e8; color: #b26a00; margin-bottom: 10px; }
+.ai-hint { font-size: 12px; color: #98a1b5; margin-top: 8px; line-height: 1.6; }
 </style>
