@@ -8,6 +8,7 @@ import lessonRoutes from './routes/lessons.js';
 import uploadRoutes from './routes/uploads.js';
 import requestRoutes from './routes/requests.js';
 import availabilityRoutes from './routes/availability.js';
+import roomRoutes from './routes/rooms.js';
 import calendarRoutes from './routes/calendar.js';
 import adminRoutes from './routes/admin.js';
 import notificationRoutes from './routes/notifications.js';
@@ -42,6 +43,7 @@ export function createApp() {
   app.use('/api/lessons', lessonRoutes);
   app.use('/api/requests', requestRoutes);
   app.use('/api/availability', availabilityRoutes);
+  app.use('/api/rooms', roomRoutes);
   app.use('/api/calendar', calendarRoutes);
   app.use('/api/admin', adminRoutes);
   app.use('/api/notifications', notificationRoutes);
