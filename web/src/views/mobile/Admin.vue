@@ -1,6 +1,5 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { useBack } from '../../composables/back';
 import { showConfirmDialog, showToast } from 'vant';
 import api, { toastError } from '../../api';
@@ -9,7 +8,6 @@ import { ROLE_LEVEL_LABEL, roleLabel } from '../../roles';
 import { cnDate } from '../../utils';
 import { ensureHolidays, holidaySyncInfo } from '../../utils/holidays';
 
-const router = useRouter();
 const back = useBack('/me');
 const auth = useAuthStore();
 const tab = ref('users');

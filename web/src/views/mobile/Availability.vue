@@ -1,13 +1,11 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { useBack } from '../../composables/back';
 import { showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import { addDays, cnDate, fmtDate, WEEKDAY_SHORT } from '../../utils';
 
-const router = useRouter();
 const back = useBack('/me');
 const auth = useAuthStore();
 const todayStr = fmtDate(new Date());
