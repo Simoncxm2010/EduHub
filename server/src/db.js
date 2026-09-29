@@ -156,6 +156,15 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+
+-- 法定节假日同步缓存：按年存一份外部数据源的结果，覆盖内置兜底表。
+-- 存库而不是只放内存，是为了离线部署重启后依然用得上最后一次同步到的数据。
+CREATE TABLE IF NOT EXISTS holiday_sync (
+  year TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT '',
+  fetched_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 `);
 
 /** 老库补列：SQLite 没有 ADD COLUMN IF NOT EXISTS */
