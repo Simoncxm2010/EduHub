@@ -39,6 +39,7 @@
 | 手机日历 | 订阅地址（webcal）自动同步、导出 .ics、从 .ics 导入排课 | 订阅自己的课表 |
 | 统计与导出 | 花名册出勤率、课时签到明细 CSV、按学生收费结算单 CSV、本月课酬 | 自己的申请与签到情况 |
 | 管理后台 | 系统概览、用户/角色/权限、启停用、重置密码、全部班级 | — |
+| 界面主题 | 亮色 / 暗色 / 跟随系统，随账号跨设备保存 | 同左 |
 
 ### 智能协调时间怎么用
 
@@ -52,6 +53,12 @@
 在班级详情页选月份，即可看到每个学生当月的课次、出勤（含迟到）、请假、缺勤与应收金额
 （出勤 × 单节课酬），一键导出带 BOM 的结算单 CSV，Excel 直接打开。口径：出勤与迟到计费，
 请假与缺勤不计费；金额只按已记录的考勤统计。
+
+### 界面主题
+
+「亮色 / 暗色 / 跟随系统」三档，桌面端在侧边栏底部、手机端在「我的」页切换。
+默认跟随系统（自动响应手机/电脑的深色模式），选择后随账号保存——换设备登录主题一致；
+未登录时按本机偏好记忆。暗色同时覆盖自绘界面与 Vant 组件（含弹层），签到签名保持白纸黑字。
 
 ### 邀请链接
 
@@ -166,7 +173,7 @@ PORT=8787 npm start               # 单进程托管 API + 静态页面
 
 均以 `/api` 为前缀。除标注外都需要登录。
 
-- `POST /auth/register` `POST /auth/login` `POST /auth/logout` `GET /auth/me`
+- `POST /auth/register` `POST /auth/login` `POST /auth/logout` `GET /auth/me` `PUT /auth/theme`
 - `POST /uploads`、`GET /uploads/<file>`（图片鉴权）
 - `GET/POST /classes` `GET/PUT/DELETE /classes/:id` `POST /classes/join`
 - `POST/DELETE /classes/:id/students` `GET /classes/:id/stats`
@@ -188,7 +195,7 @@ PORT=8787 npm start               # 单进程托管 API + 静态页面
   `PUT /admin/users/:id/status` `PUT /admin/users/:id/password` `DELETE /admin/users/:id`
   `GET /admin/classes`（以上需管理员及以上）
 
-运行测试：`npm test`（87 个接口用例，覆盖权限矩阵、账号启停用、签到留痕与隐私隔离、
+运行测试：`npm test`（93 个接口用例，覆盖权限矩阵、账号启停用、签到留痕与隐私隔离、
 图片鉴权、冲突检测与批量排课、智能协调、申请审批全链路、日历导入导出、CSV 注入防护、站内通知、收费结算）。
 
 ## 数据备份

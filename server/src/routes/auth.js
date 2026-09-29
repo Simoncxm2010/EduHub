@@ -7,7 +7,7 @@ import { h, ApiError } from '../util.js';
 const router = Router();
 
 function publicUser(u) {
-  return { id: u.id, name: u.name, phone: u.phone, role: u.role, status: u.status, created_at: u.created_at };
+  return { id: u.id, name: u.name, phone: u.phone, role: u.role, status: u.status, theme: u.theme || 'system', created_at: u.created_at };
 }
 
 function validateRegister({ name, phone, password, role }) {
@@ -53,6 +53,15 @@ router.post('/login', h(async (req, res) => {
 router.post('/logout', h(async (req, res) => {
   clearAuthCookie(res);
   res.json({ ok: true });
+}));
+
+/** 设置界面主题（light / dark / system），随账号保存 */
+router.put('/theme', authRequired, h(async (req, res) => {
+  const theme = String(req.body?.theme || '');
+  if (!['light', 'dark', 'system'].includes(theme)) throw new ApiError(400, '主题不正确');
+  db.prepare('UPDATE users SET theme = ? WHERE id = ?').run(theme, req.user.id);
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  res.json({ user: publicUser(user) });
 }));
 
 router.get('/me', authRequired, h(async (req, res) => {

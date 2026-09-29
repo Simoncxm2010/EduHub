@@ -206,6 +206,8 @@ ensureColumn('attendance', 'signed_at', 'TEXT');
 // v0.3 起：账号状态、日历订阅令牌、班级课酬
 ensureColumn('users', 'status', "TEXT NOT NULL DEFAULT 'active'");
 ensureColumn('users', 'feed_token', 'TEXT');
+// v0.6 起：界面主题（light / dark / system），随账号跨设备保存
+ensureColumn('users', 'theme', "TEXT NOT NULL DEFAULT 'system' CHECK(theme IN ('light','dark','system'))");
 ensureColumn('classes', 'rate', 'REAL NOT NULL DEFAULT 0');
 
 /** 本地时区的今天，格式 YYYY-MM-DD */

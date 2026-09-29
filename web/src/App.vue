@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { showConfirmDialog, showToast } from 'vant';
 import { useAuthStore } from './store';
 import { isDesktop } from './composables/layout';
+import { themeMode, setThemeMode } from './composables/theme';
 import { buildNav } from './nav';
 import TabBar from './components/TabBar.vue';
 
@@ -73,6 +74,14 @@ async function logout() {
       </nav>
 
       <div class="sidebar-foot">
+        <div class="theme-seg" title="界面主题">
+          <button
+            v-for="t in [{ v: 'light', t: '亮色' }, { v: 'dark', t: '暗色' }, { v: 'system', t: '跟随系统' }]"
+            :key="t.v"
+            :class="{ on: themeMode === t.v }"
+            @click="setThemeMode(t.v)"
+          >{{ t.t }}</button>
+        </div>
         <div class="sidebar-user">
           <div class="avatar">{{ (auth.user?.name || '?').slice(0, 1) }}</div>
           <div class="sidebar-user-text">

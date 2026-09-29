@@ -5,6 +5,7 @@ import { showConfirmDialog, showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import { mobileMoreLinks } from '../../nav';
+import { themeMode, setThemeMode } from '../../composables/theme';
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -89,6 +90,19 @@ async function logout() {
       </van-tag>
     </div>
 
+
+    <div class="card">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px">
+        <van-icon name="bulb-o" size="19" color="#4f6ef2" />
+        <span style="font-size: 15px; font-weight: 600">界面主题</span>
+      </div>
+      <div class="theme-seg theme-seg-lg">
+        <button v-for="t in [{ v: 'light', t: '亮色' }, { v: 'dark', t: '暗色' }, { v: 'system', t: '跟随系统' }]" :key="t.v"
+          :class="{ on: themeMode === t.v }" @click="setThemeMode(t.v)">{{ t.t }}</button>
+      </div>
+      <div class="muted" style="margin-top: 10px">跟随系统会自动随手机的深色模式切换；设置随账号保存，换设备登录也一致。</div>
+    </div>
+
     <div class="card card-tight">
       <div v-for="l in moreLinks" :key="l.to" class="attend-row" style="cursor: pointer" @click="router.push(l.to)">
         <div class="attend-name">
@@ -110,7 +124,7 @@ async function logout() {
       <div class="muted" style="margin-top: 8px; line-height: 1.7">
         设置 → 日历 → 添加已订阅的日历，把下面的地址粘进去。课表变动会自动同步，上课前 30 分钟提醒。
       </div>
-      <div style="margin-top: 12px; background: #f6f8fd; border-radius: 10px; padding: 12px; word-break: break-all; font-size: 12.5px; color: #3d5ecc">
+      <div style="margin-top: 12px; background: var(--eduhub-tint); border-radius: 10px; padding: 12px; word-break: break-all; font-size: 12.5px; color: var(--van-primary-color)">
         {{ feed?.webcal || '生成中…' }}
       </div>
       <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap">

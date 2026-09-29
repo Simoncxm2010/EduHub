@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import api from './api';
+import { syncThemeFromUser } from './composables/theme';
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -22,6 +23,8 @@ export const useAuthStore = defineStore('auth', {
       this.user = user;
       localStorage.setItem('eduhub_token', token);
       localStorage.setItem('eduhub_user', JSON.stringify(user));
+      // 服务端的主题设置优先（跨设备一致）
+      syncThemeFromUser(user);
     },
     async login(phone, password) {
       const d = await api.post('/auth/login', { phone, password });
@@ -35,6 +38,7 @@ export const useAuthStore = defineStore('auth', {
       const d = await api.get('/auth/me');
       this.user = d.user;
       localStorage.setItem('eduhub_user', JSON.stringify(d.user));
+      syncThemeFromUser(d.user);
     },
     async fetchUnread() {
       if (!this.token) return;

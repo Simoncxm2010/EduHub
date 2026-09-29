@@ -309,5 +309,5 @@ async function logout() {
 <style scoped>
 .d-list-hint p { font-size: 13px; line-height: 1.8; color: #4a5470; margin: 0 0 10px; }
 .d-list-hint p:last-child { margin-bottom: 0; }
-.d-list-hint code { background: #f2f4fa; padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+.d-list-hint code { background: var(--eduhub-tint); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
 </style>
