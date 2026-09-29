@@ -19,8 +19,12 @@ const form = ref({
   room: '', topic: '', from: todayStr, to: addDays(todayStr, 55),
 });
 const skipDates = ref([]);
+/** 手动恢复的日期（可覆盖节假日默认跳过） */
+const includeDates = ref([]);
+/** 法定节假日不排课（调休补班日照常排） */
+const skipHolidays = ref(true);
 const plan = ref([]);
-const summary = ref({ total: 0, ok: 0, conflict: 0, skip: 0 });
+const summary = ref({ total: 0, ok: 0, conflict: 0, skip: 0, holiday: 0 });
 const suggestion = ref(null);
 const loading = ref(false);
 const creating = ref(false);
@@ -34,6 +38,8 @@ watch(() => props.show, (visible) => {
   step.value = 'form';
   plan.value = [];
   skipDates.value = [];
+  includeDates.value = [];
+  skipHolidays.value = true;
   const lastClass = Number(localStorage.getItem('eduhub_last_class')) || null;
   const picked = props.classes.find((c) => c.id === (props.presetClassId || lastClass)) || props.classes[0];
   form.value = {
@@ -70,7 +76,10 @@ async function preview() {
   if (form.value.to < form.value.from) return showToast('结束日期不能早于开始日期');
   loading.value = true;
   try {
-    const d = await api.post('/lessons/smart/plan', { ...form.value, skip_dates: skipDates.value, dry_run: true });
+    const d = await api.post('/lessons/smart/plan', {
+      ...form.value, skip_dates: skipDates.value, include_dates: includeDates.value,
+      skip_holidays: skipHolidays.value, dry_run: true,
+    });
     plan.value = d.plan;
     summary.value = d.summary;
     step.value = 'preview';
@@ -81,11 +90,20 @@ async function preview() {
   }
 }
 
+/** 点某一行的日期可以排除 / 恢复；节假日默认跳过，点一下改成照常排课 */
 async function toggleSkip(row) {
   if (row.status === 'conflict') return;
-  const i = skipDates.value.indexOf(row.date);
-  if (i >= 0) skipDates.value.splice(i, 1);
-  else skipDates.value.push(row.date);
+  if (row.excluded) {
+    const i = skipDates.value.indexOf(row.date);
+    if (i >= 0) skipDates.value.splice(i, 1);
+  } else if (row.included) {
+    const i = includeDates.value.indexOf(row.date);
+    if (i >= 0) includeDates.value.splice(i, 1);
+  } else if (row.holiday?.type === 'holiday') {
+    includeDates.value.push(row.date);
+  } else {
+    skipDates.value.push(row.date);
+  }
   await preview();
 }
 
@@ -93,7 +111,10 @@ async function create() {
   if (!summary.value.ok) return showToast('没有可排的课时');
   creating.value = true;
   try {
-    const d = await api.post('/lessons/smart/plan', { ...form.value, skip_dates: skipDates.value, dry_run: false });
+    const d = await api.post('/lessons/smart/plan', {
+      ...form.value, skip_dates: skipDates.value, include_dates: includeDates.value,
+      skip_holidays: skipHolidays.value, dry_run: false,
+    });
     localStorage.setItem('eduhub_last_class', String(form.value.class_id));
     showToast({ type: 'success', message: `已创建 ${d.created.length} 节课` });
     emit('created', d);
@@ -169,14 +190,25 @@ async function create() {
           >周{{ WEEKDAY_SHORT[d] }}</button>
         </div>
       </div>
+
+      <div class="d-field" style="margin-top: 14px">
+        <label class="d-check">
+          <input v-model="skipHolidays" type="checkbox" />
+          法定节假日不排课（调休补班日照常排）
+        </label>
+        <div class="muted" style="margin-top: 6px; font-size: 12.5px">
+          生成时会自动跳过法定节假日、与该班已有课程冲突、或同一教室被占用的日期。
+        </div>
+      </div>
     </template>
 
     <template v-else>
       <div class="smart-summary" style="margin: 0 0 14px">
         <div><b>{{ summary.total }}</b><span>候选日期</span></div>
         <div class="ok"><b>{{ summary.ok }}</b><span>可排</span></div>
+        <div class="holiday"><b>{{ summary.holiday || 0 }}</b><span>节假日跳过</span></div>
         <div class="conflict"><b>{{ summary.conflict }}</b><span>冲突跳过</span></div>
-        <div class="skip"><b>{{ summary.skip }}</b><span>手动排除</span></div>
+        <div class="skip"><b>{{ summary.skip - (summary.holiday || 0) }}</b><span>手动排除</span></div>
       </div>
       <div class="d-scroll" style="max-height: 46vh">
         <table class="d-table">
@@ -185,16 +217,27 @@ async function create() {
           </thead>
           <tbody>
             <tr v-for="row in plan" :key="row.date">
-              <td class="strong">{{ cnDate(row.date) }}</td>
+              <td class="strong">
+                {{ cnDate(row.date) }}
+                <span
+                  v-if="row.holiday"
+                  class="plan-hol"
+                  :class="row.holiday.type"
+                  :title="row.holiday.type === 'workday' ? `${row.holiday.name}调休补班日` : `${row.holiday.name}法定节假日`"
+                >{{ row.holiday.type === 'workday' ? '班' : '休' }}</span>
+              </td>
               <td>
-                <span class="d-badge" :class="row.status === 'ok' ? 'ok' : row.status === 'conflict' ? 'warn' : 'mute'">
-                  {{ row.status === 'ok' ? '可排' : row.status === 'conflict' ? '冲突' : '已排除' }}
+                <span
+                  class="d-badge"
+                  :class="row.status === 'ok' ? 'ok' : row.status === 'conflict' ? 'warn' : row.holiday_skip ? 'danger' : 'mute'"
+                >
+                  {{ row.status === 'ok' ? '可排' : row.status === 'conflict' ? '冲突' : row.holiday_skip ? '节假日' : '已排除' }}
                 </span>
               </td>
               <td style="font-size: 12.5px; color: #98a1b5">{{ row.reason || '—' }}</td>
               <td class="actions">
                 <button v-if="row.status !== 'conflict'" class="d-btn sm" @click="toggleSkip(row)">
-                  {{ row.status === 'skip' ? '恢复' : '排除' }}
+                  {{ row.status === 'skip' ? (row.holiday_skip ? '照常上课' : '恢复') : '排除' }}
                 </button>
               </td>
             </tr>

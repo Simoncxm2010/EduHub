@@ -4,10 +4,22 @@ const props = defineProps({
   days: { type: Array, required: true },
   compact: { type: Boolean, default: false },
   maxChips: { type: Number, default: 3 },
+  /** date -> { name, type: 'holiday' | 'workday' }（国家法定节假日） */
+  holidayMap: { type: Object, default: () => ({}) },
 });
 const emit = defineEmits(['select-day', 'select-lesson']);
 
 const dowLabels = ['一', '二', '三', '四', '五', '六', '日'];
+
+function holidayOf(date) {
+  return props.holidayMap?.[date] ?? null;
+}
+
+function cellTitle(cell) {
+  const h = holidayOf(cell.date);
+  if (!h) return undefined;
+  return h.type === 'workday' ? `${h.name}（调休补班日）` : `${h.name}（法定节假日）`;
+}
 </script>
 
 <template>
@@ -20,11 +32,24 @@ const dowLabels = ['一', '二', '三', '四', '五', '六', '日'];
         v-for="cell in days"
         :key="cell.date"
         class="mg-cell"
-        :class="{ out: !cell.inMonth, today: cell.isToday, sel: cell.selected, has: cell.lessons.length }"
+        :class="{
+          out: !cell.inMonth,
+          today: cell.isToday,
+          sel: cell.selected,
+          has: cell.lessons.length,
+          holiday: holidayOf(cell.date)?.type === 'holiday',
+          workday: holidayOf(cell.date)?.type === 'workday',
+        }"
+        :title="cellTitle(cell)"
         @click="emit('select-day', cell.date)"
       >
         <div class="mg-num">
           <span>{{ cell.day }}</span>
+          <span
+            v-if="holidayOf(cell.date)"
+            class="mg-hol"
+            :class="holidayOf(cell.date).type"
+          >{{ holidayOf(cell.date).type === 'workday' ? '班' : '休' }}</span>
           <span v-if="compact && cell.lessons.length" class="mg-count">{{ cell.lessons.length }}</span>
         </div>
 

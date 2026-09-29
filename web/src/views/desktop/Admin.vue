@@ -5,6 +5,8 @@ import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import Modal from '../../ui/Modal.vue';
 import { ROLE_LEVEL_LABEL, roleLabel } from '../../roles';
+import { cnDate } from '../../utils';
+import { ensureHolidays, holidaySyncInfo } from '../../utils/holidays';
 
 const auth = useAuthStore();
 const tab = ref('users');
@@ -46,6 +48,58 @@ async function load() {
   }
 }
 onMounted(load);
+
+/* ---------------- 法定节假日数据 ---------------- */
+
+const holidayInfo = ref(null);
+const holidayLoading = ref(false);
+const holidaySyncing = ref(false);
+
+async function loadHolidays(force = false) {
+  holidayLoading.value = true;
+  try {
+    const map = await ensureHolidays(force);
+    holidayInfo.value = { map, sync: holidaySyncInfo() };
+  } catch (e) {
+    toastError(e);
+  } finally {
+    holidayLoading.value = false;
+  }
+}
+
+async function syncHolidays() {
+  holidaySyncing.value = true;
+  try {
+    const d = await api.post('/holidays/refresh', { force: true });
+    showToast(d.updated ? `已同步 ${d.updated} 年节假日数据` : d.message || '暂无新数据');
+    await loadHolidays(true);
+  } catch (e) {
+    toastError(e);
+  } finally {
+    holidaySyncing.value = false;
+  }
+}
+
+const holidaySync = computed(() => holidayInfo.value?.sync || null);
+const holidayRangeText = computed(() => {
+  const dates = Object.keys(holidayInfo.value?.map || {}).sort();
+  return dates.length ? `${dates[0]} ~ ${dates[dates.length - 1]}` : '—';
+});
+const syncedYearsText = computed(() => {
+  const years = holidaySync.value?.years || [];
+  if (!years.length) return '尚未同步（使用内置数据）';
+  return years.map((y) => `${y.year}（${y.fetched_at?.slice(0, 10) || '—'}）`).join('、');
+});
+/** 今天起的节假日，最多列 40 条 */
+const holidayRows = computed(() => {
+  const map = holidayInfo.value?.map || {};
+  const t = new Date().toLocaleDateString('en-CA');
+  return Object.entries(map)
+    .filter(([d]) => d >= t)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(0, 40)
+    .map(([date, info]) => ({ date, ...info }));
+});
 
 /** 可否操作某用户：不能动自己，也不能动同级或更高级别 */
 function canManage(u) {
@@ -264,6 +318,7 @@ const systemItems = computed(() => {
       <div class="d-tabs">
         <button :class="{ on: tab === 'users' }" @click="tab = 'users'">用户与权限</button>
         <button :class="{ on: tab === 'classes' }" @click="tab = 'classes'">全部班级</button>
+        <button :class="{ on: tab === 'holidays' }" @click="tab = 'holidays'; loadHolidays()">法定节假日</button>
         <button v-if="auth.isSuper" :class="{ on: tab === 'system' }" @click="tab = 'system'; loadSuperPanels()">系统信息</button>
         <button v-if="auth.isSuper" :class="{ on: tab === 'audit' }" @click="tab = 'audit'; loadSuperPanels()">审计日志</button>
       </div>
@@ -381,6 +436,74 @@ const systemItems = computed(() => {
           </tbody>
         </table>
       </div>
+    </div>
+
+    <!-- 法定节假日数据（管理员）：排课日历与智能排课都依赖这份数据 -->
+    <div v-else-if="tab === 'holidays'" class="d-card">
+      <div class="d-toolbar" style="margin-bottom: 12px">
+        <span class="d-badge info">国家法定节假日与调休补班日</span>
+        <div class="spacer" />
+        <button class="d-btn sm" :disabled="holidayLoading" @click="loadHolidays(true)">刷新</button>
+        <button class="d-btn sm primary" :disabled="holidaySyncing || !holidaySync?.enabled" @click="syncHolidays">
+          {{ holidaySyncing ? '同步中…' : '立即同步' }}
+        </button>
+      </div>
+
+      <div v-if="holidayLoading && !holidayInfo" class="d-empty">加载中…</div>
+      <template v-else-if="holidayInfo">
+        <div class="d-grid-2" style="margin-bottom: 14px">
+          <div class="d-stat">
+            <div class="label">数据来源</div>
+            <div class="value" style="font-size: 15px">
+              {{ holidaySync?.enabled ? '服务端每日自动同步' : '已关闭自动同步（EDUHUB_HOLIDAY_SYNC=0）' }}
+            </div>
+          </div>
+          <div class="d-stat">
+            <div class="label">覆盖范围</div>
+            <div class="value" style="font-size: 15px">{{ holidayRangeText }}</div>
+          </div>
+          <div class="d-stat">
+            <div class="label">已同步年份</div>
+            <div class="value" style="font-size: 14px">{{ syncedYearsText }}</div>
+          </div>
+          <div class="d-stat">
+            <div class="label">内置兜底年份</div>
+            <div class="value" style="font-size: 14px">{{ (holidaySync?.builtin_years || []).join('、') || '—' }}</div>
+          </div>
+        </div>
+
+        <div v-if="holidaySync?.last" class="d-badge mute" style="display: block; padding: 10px 12px; margin-bottom: 12px">
+          最近一次同步：{{ holidaySync.last.at }} ·
+          {{ holidaySync.last.results.map((r) => `${r.year} ${r.status}${r.error ? `（${r.error}）` : ''}`).join('；') }}
+        </div>
+
+        <div v-if="(holidaySync?.estimated_years || []).length" class="d-badge warn" style="display: block; padding: 10px 12px; margin-bottom: 12px">
+          {{ holidaySync.estimated_years.join('、') }} 年的安排尚未公布，当前是按周末推算的占位数据，同步到官方数据后会自动覆盖。
+        </div>
+
+        <div class="d-scroll" style="max-height: 420px">
+          <table class="d-table">
+            <thead>
+              <tr><th>日期</th><th>名称</th><th>类型</th><th>数据来源</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="h in holidayRows" :key="h.date">
+                <td class="strong">{{ cnDate(h.date) }}</td>
+                <td>{{ h.name }}</td>
+                <td>
+                  <span class="d-badge" :class="h.type === 'workday' ? 'info' : 'danger'">
+                    {{ h.type === 'workday' ? '调休补班' : '放假' }}
+                  </span>
+                </td>
+                <td style="font-size: 12.5px; color: var(--eduhub-muted)">
+                  {{ h.source === 'sync' ? '在线同步' : '内置数据' }}
+                </td>
+              </tr>
+              <tr v-if="!holidayRows.length"><td colspan="4" class="d-empty">今天起没有更多节假日数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
     </div>
 
     <!-- 系统信息（仅超管：运维/开发领地） -->

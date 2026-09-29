@@ -4,6 +4,7 @@ import { showToast } from 'vant';
 import api, { toastError } from '../../api';
 import Modal from '../../ui/Modal.vue';
 import { addDays, fmtDate } from '../../utils';
+import { ensureHolidays, holidayOf } from '../../utils/holidays';
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -16,6 +17,16 @@ const todayStr = fmtDate(new Date());
 const form = ref({ class_id: null, date: todayStr, start_time: '18:00', duration_min: 90, room: '', topic: '', repeat_weeks: 1 });
 const submitting = ref(false);
 const conflict = ref('');
+
+/** 所选日期的节假日提示（法定节假日 / 调休补班日） */
+const holidayHint = computed(() => {
+  if (!form.value.date) return '';
+  const h = holidayOf(form.value.date);
+  if (!h) return '';
+  return h.type === 'workday' ? `${form.value.date} 为${h.name}调休补班日（需上班）` : `${form.value.date} 为${h.name}法定节假日`;
+});
+
+ensureHolidays();
 
 const quickTimes = ['08:00', '09:00', '14:00', '16:00', '18:00', '18:30', '19:00', '19:30', '20:00'];
 const quickDates = computed(() => [
@@ -136,6 +147,10 @@ async function submit() {
       <button v-for="t in quickTimes" :key="t" class="d-btn sm" :class="form.start_time === t ? 'primary' : ''" @click="form.start_time = t; check()">
         {{ t }}
       </button>
+    </div>
+
+    <div v-if="holidayHint" class="d-badge warn" style="margin-top: 14px; display: block; padding: 10px 12px">
+      <van-icon name="flag-o" /> {{ holidayHint }}
     </div>
 
     <div v-if="conflict" class="d-badge warn" style="margin-top: 14px; display: block; padding: 10px 12px">

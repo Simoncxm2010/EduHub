@@ -840,12 +840,13 @@ body {
   gap: 8px;
   align-items: flex-start;
 }
-.smart-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 8px 18px 0; }
+.smart-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 8px; margin: 8px 18px 0; }
 .smart-summary > div { background: var(--eduhub-tint); border-radius: 10px; padding: 8px 10px; text-align: center; }
 .smart-summary b { display: block; font-size: 18px; }
 .smart-summary span { font-size: 11px; color: var(--eduhub-muted); }
 .smart-summary .ok b { color: #07c160; }
 .smart-summary .conflict b { color: #ff976a; }
+.smart-summary .holiday b { color: #d03050; }
 .smart-summary .skip b { color: var(--eduhub-muted); }
 .smart-plan { margin: 0 18px; max-height: 46vh; overflow-y: auto; }
 .plan-row {
@@ -1161,3 +1162,90 @@ html.dark .invite-code { color: var(--van-primary-color); }
 }
 .theme-seg-lg button { padding: 9px 0; font-size: 13.5px; border-radius: 8px; }
 html.dark .theme-seg button.on { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45); }
+
+/* ============ 国家法定节假日（排课日历） ============ */
+.week-days .day { position: relative; }
+
+/* 排课表单：节日提示条 */
+.holiday-hint {
+  margin: 12px 20px 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #fff7e8;
+  color: #c26a00;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 智能排课预览行：休/班徽标 */
+.plan-hol {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 5px;
+  margin-right: 4px;
+}
+.plan-hol.holiday { background: #ffecec; color: #d03050; }
+.plan-hol.workday { background: #e8f4ff; color: #1677ff; }
+
+/* 周视图：列头节日名 + 假日列底色 */
+.wk-hol {
+  display: block;
+  height: 14px;
+  line-height: 14px;
+  font-size: 10px;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wk-hol.holiday { color: #f56c6c; }
+.wk-hol.workday { color: #409eff; }
+.wk-dayhead.holiday .num { color: #f56c6c; }
+.wk-col.holiday:not(.today) { background: rgba(245, 108, 108, 0.045); }
+
+/* 月视图：休/班徽标 + 假日底色（不覆盖选中高亮） */
+.mg-hol {
+  font-size: 10px;
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 4px;
+  flex: none;
+}
+.mg-hol.holiday { background: #ffecec; color: #d03050; }
+.mg-hol.workday { background: #e8f4ff; color: #1677ff; }
+.mg-cell.holiday:not(.sel) { background: rgba(245, 108, 108, 0.04); }
+.mg-cell.workday:not(.sel) { background: rgba(22, 119, 255, 0.035); }
+
+/* 手机周条：休/班 小徽标 */
+.day-hol {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 9px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 4px;
+}
+.day-hol.holiday { background: #ffecec; color: #d03050; }
+.day-hol.workday { background: #e8f4ff; color: #1677ff; }
+.day.holiday .num { color: #f56c6c; }
+
+/* 暗色下的节假日配色 */
+html.dark .holiday-hint { background: #3a2a12; color: #ffb35c; }
+html.dark .plan-hol.holiday,
+html.dark .mg-hol.holiday,
+html.dark .day-hol.holiday { background: #3a1a20; color: #ff8093; }
+html.dark .plan-hol.workday,
+html.dark .mg-hol.workday,
+html.dark .day-hol.workday { background: #16294a; color: #79bbff; }
+html.dark .wk-hol.holiday { color: #ff8093; }
+html.dark .wk-hol.workday { color: #79bbff; }
+html.dark .wk-dayhead.holiday .num { color: #ff8093; }
+html.dark .wk-col.holiday:not(.today) { background: rgba(255, 128, 147, 0.05); }
+html.dark .mg-cell.holiday:not(.sel) { background: rgba(255, 128, 147, 0.05); }
+html.dark .mg-cell.workday:not(.sel) { background: rgba(121, 187, 255, 0.05); }
+html.dark .day.holiday .num { color: #ff8093; }

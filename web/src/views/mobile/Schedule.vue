@@ -6,6 +6,7 @@ import { isDesktop } from '../../composables/layout';
 import {
   addDays, cnDate, fmtDate, monthStartOf, nowMinutes, weekStartOf, WEEKDAY_SHORT,
 } from '../../utils';
+import { ensureHolidays } from '../../utils/holidays';
 import LessonCard from '../../components/LessonCard.vue';
 import WeekGrid from '../../components/WeekGrid.vue';
 import MonthGrid from '../../components/MonthGrid.vue';
@@ -23,6 +24,8 @@ const classes = ref([]);
 const lessons = ref({});
 const loading = ref(false);
 const now = ref(nowMinutes());
+/** date -> { name, type: 'holiday' | 'workday' }（国家法定节假日） */
+const holidayMap = ref({});
 
 let timer = null;
 onMounted(() => {
@@ -109,6 +112,7 @@ async function load() {
   }
 }
 onMounted(async () => {
+  ensureHolidays().then((m) => { holidayMap.value = m; });
   await loadClasses();
   await load();
 });
@@ -225,12 +229,14 @@ async function onCreated(d) {
           :days="weekDays"
           :lessons-by-date="lessons"
           :now-minute="nowMinuteForGrid"
+          :holiday-map="holidayMap"
           @select="(l) => $router.push(`/lessons/${l.id}`)"
           @create="(p) => auth.canTeach && openForm(p)"
         />
         <MonthGrid
           v-else
           :days="monthDays"
+          :holiday-map="holidayMap"
           @select-day="onMonthSelectDay"
           @select-lesson="(l) => $router.push(`/lessons/${l.id}`)"
         />
@@ -281,11 +287,22 @@ async function onCreated(d) {
               v-for="d in weekDays"
               :key="d.date"
               class="day"
-              :class="{ sel: d.date === selected, today: d.date === todayStr }"
+              :class="{
+                sel: d.date === selected,
+                today: d.date === todayStr,
+                holiday: holidayMap[d.date]?.type === 'holiday',
+                workday: holidayMap[d.date]?.type === 'workday',
+              }"
+              :title="holidayMap[d.date]?.name"
               @click="selected = d.date"
             >
               <div class="dow">{{ d.dowShort }}</div>
               <div class="num">{{ d.num }}</div>
+              <span
+                v-if="holidayMap[d.date]"
+                class="day-hol"
+                :class="holidayMap[d.date].type"
+              >{{ holidayMap[d.date].type === 'workday' ? '班' : '休' }}</span>
               <div v-if="(lessons[d.date] || []).length" class="dot" />
             </div>
           </div>
@@ -311,7 +328,7 @@ async function onCreated(d) {
             <van-icon name="arrow" @click="shift(1)" />
           </div>
           <van-loading v-if="loading" style="margin: 24px auto" vertical>加载中…</van-loading>
-          <MonthGrid v-else :days="monthDays" compact @select-day="onMonthSelectDay" />
+          <MonthGrid v-else :days="monthDays" compact :holiday-map="holidayMap" @select-day="onMonthSelectDay" />
           <div class="muted" style="text-align: center; margin-top: 8px">点某一天可查看当天课程</div>
         </div>
       </template>

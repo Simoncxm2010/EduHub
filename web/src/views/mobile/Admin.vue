@@ -1,10 +1,12 @@
 <script setup>
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { showConfirmDialog, showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import { ROLE_LEVEL_LABEL, roleLabel } from '../../roles';
+import { cnDate } from '../../utils';
+import { ensureHolidays, holidaySyncInfo } from '../../utils/holidays';
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -55,11 +57,64 @@ async function loadSuperPanels() {
   }
 }
 
+/** 切到某个标签页时按需加载（Vant 的标签内容是懒渲染的） */
+function onTabChange(name) {
+  if (name === 'holidays') loadHolidays();
+  if (name === 'system' || name === 'audit') loadSuperPanels();
+}
+
 const showActions = ref(false);
 const current = ref(null);
 const showReset = ref(false);
 const newPassword = ref('');
 const busy = ref(false);
+
+/* ---------------- 法定节假日数据 ---------------- */
+
+const holidayInfo = ref(null);
+const holidaySyncing = ref(false);
+
+async function loadHolidays(force = false) {
+  try {
+    const map = await ensureHolidays(force);
+    holidayInfo.value = { map, sync: holidaySyncInfo() };
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+async function syncHolidays() {
+  holidaySyncing.value = true;
+  try {
+    const d = await api.post('/holidays/refresh', { force: true });
+    showToast(d.updated ? `已同步 ${d.updated} 年` : d.message || '暂无新数据');
+    await loadHolidays(true);
+  } catch (e) {
+    toastError(e);
+  } finally {
+    holidaySyncing.value = false;
+  }
+}
+
+const holidaySync = computed(() => holidayInfo.value?.sync || null);
+const holidayRangeText = computed(() => {
+  const dates = Object.keys(holidayInfo.value?.map || {}).sort();
+  return dates.length ? `${dates[0]} ~ ${dates[dates.length - 1]}` : '—';
+});
+const syncedYearsText = computed(() => {
+  const years = holidaySync.value?.years || [];
+  return years.length ? years.map((y) => y.year).join('、') : '尚未同步';
+});
+/** 今天起的节假日，最多列 40 条 */
+const holidayRows = computed(() => {
+  const map = holidayInfo.value?.map || {};
+  const t = new Date().toLocaleDateString('en-CA');
+  return Object.entries(map)
+    .filter(([d]) => d >= t)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(0, 40)
+    .map(([date, info]) => ({ date, ...info }));
+});
 
 async function load() {
   loading.value = true;
@@ -194,7 +249,7 @@ async function removeUser() {
       </div>
     </div>
 
-    <van-tabs v-model:active="tab">
+    <van-tabs v-model:active="tab" @change="onTabChange">
       <van-tab title="用户与权限" name="users">
         <div class="filter-bar" style="margin-top: 10px">
           <span class="chip" :class="{ on: !filterRole }" @click="filterRole = ''; load()">全部</span>
@@ -250,6 +305,52 @@ async function removeUser() {
           </div>
         </div>
         <van-empty v-if="!classes.length" image="search" description="还没有班级" />
+      </van-tab>
+
+      <!-- 法定节假日数据（管理员）：排课日历与智能排课都依赖这份数据 -->
+      <van-tab title="法定节假日" name="holidays">
+        <div class="card">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px">
+            <span style="font-weight: 600">国家法定节假日</span>
+            <div style="flex: 1" />
+            <van-button size="mini" :loading="holidaySyncing" :disabled="!holidaySync?.enabled" @click="syncHolidays">
+              立即同步
+            </van-button>
+          </div>
+          <div v-if="!holidayInfo" class="muted" style="text-align: center; padding: 14px 0">加载中…</div>
+          <template v-else>
+            <div class="attend-row">
+              <div class="attend-name"><span class="muted">数据来源</span></div>
+              <div style="font-size: 13px; text-align: right">
+                {{ holidaySync?.enabled ? '每日自动同步' : '自动同步已关闭' }}
+              </div>
+            </div>
+            <div class="attend-row">
+              <div class="attend-name"><span class="muted">覆盖范围</span></div>
+              <div style="font-size: 13px; text-align: right">{{ holidayRangeText }}</div>
+            </div>
+            <div class="attend-row">
+              <div class="attend-name"><span class="muted">已同步年份</span></div>
+              <div style="font-size: 13px; text-align: right">{{ syncedYearsText }}</div>
+            </div>
+            <div v-if="(holidaySync?.estimated_years || []).length" class="muted" style="margin-top: 10px; font-size: 12px">
+              {{ holidaySync.estimated_years.join('、') }} 年安排尚未公布，当前为推算的占位数据，同步后自动覆盖。
+            </div>
+          </template>
+        </div>
+
+        <div class="section-head"><span>今天起的节假日</span></div>
+        <div v-for="h in holidayRows" :key="h.date" class="card" style="padding: 12px 14px">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span style="font-weight: 600">{{ cnDate(h.date) }}</span>
+            <van-tag :type="h.type === 'workday' ? 'primary' : 'danger'" plain>
+              {{ h.type === 'workday' ? '调休补班' : '放假' }}
+            </van-tag>
+            <div style="flex: 1" />
+            <span class="muted">{{ h.name }}</span>
+          </div>
+        </div>
+        <van-empty v-if="holidayInfo && !holidayRows.length" image="search" description="今天起没有更多节假日数据" />
       </van-tab>
 
       <!-- 系统信息（仅超管：运维/开发领地） -->

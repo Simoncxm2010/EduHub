@@ -23,7 +23,7 @@ const exporting = ref(false);
 const showStudent = ref(false);
 const student = ref({ name: '', phone: '', remark: '' });
 const showBulk = ref(false);
-const bulk = ref({ from: todayStr, to: addDays(todayStr, 7), status: 'canceled' });
+const bulk = ref({ from: todayStr, to: addDays(todayStr, 7), status: 'canceled', only_holidays: false });
 const showSettings = ref(false);
 const settings = ref({ name: '', subject: '', description: '', rate: 0 });
 const busy = ref(false);
@@ -147,7 +147,13 @@ async function runBulk() {
   busy.value = true;
   try {
     const d = await api.post('/lessons/bulk-status', { class_id: classId, ...bulk.value });
-    showToast({ type: 'success', message: d.updated ? `已更新 ${d.updated} 节课` : '这段时间没有需要变更的课时' });
+    if (!d.updated) {
+      showToast(bulk.value.only_holidays ? '这段时间没有落在法定节假日的课时' : '这段时间没有需要变更的课时');
+    } else if (bulk.value.only_holidays && d.holidays?.length) {
+      showToast({ type: 'success', message: `已处理 ${d.updated} 节课（${d.holidays.join('、')}）` });
+    } else {
+      showToast({ type: 'success', message: `已更新 ${d.updated} 节课` });
+    }
     showBulk.value = false;
     load();
   } catch (e) {
@@ -444,9 +450,17 @@ function statusOf(l) {
             <option value="scheduled">待上课（恢复）</option>
           </select>
         </div>
+        <div class="d-field" style="grid-column: 1 / -1">
+          <label class="d-check">
+            <input v-model="bulk.only_holidays" type="checkbox" />
+            只处理落在法定节假日的课时
+          </label>
+        </div>
       </div>
       <div class="d-badge warn" style="margin-top: 14px; display: block; padding: 10px 12px">
-        会修改这段时间内该班级的全部课时状态，签到与留痕不受影响
+        {{ bulk.only_holidays
+          ? '只修改日期属于国家法定节假日的课时（调休补班日不算），其他课时不受影响'
+          : '会修改这段时间内该班级的全部课时状态，签到与留痕不受影响' }}
       </div>
       <template #footer>
         <button class="d-btn" @click="showBulk = false">取消</button>

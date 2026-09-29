@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import { addDays, fmtDate, monthStartOf, nowMinutes, weekStartOf, WEEKDAY_SHORT } from '../../utils';
+import { ensureHolidays } from '../../utils/holidays';
 import WeekGrid from '../../components/WeekGrid.vue';
 import MonthGrid from '../../components/MonthGrid.vue';
 import LessonFormModal from './LessonFormModal.vue';
@@ -21,6 +22,8 @@ const classes = ref([]);
 const lessons = ref({});
 const loading = ref(true);
 const now = ref(nowMinutes());
+/** date -> { name, type: 'holiday' | 'workday' }（国家法定节假日） */
+const holidayMap = ref({});
 let timer = null;
 
 const weekStart = computed(() => weekStartOf(anchor.value));
@@ -80,6 +83,7 @@ async function load() {
 }
 
 onMounted(async () => {
+  ensureHolidays().then((m) => { holidayMap.value = m; });
   try {
     const d = await api.get('/classes');
     classes.value = d.classes;
@@ -188,12 +192,14 @@ function openLesson(l) {
             :days="weekDays"
             :lessons-by-date="lessons"
             :now-minute="nowMinuteForGrid"
+            :holiday-map="holidayMap"
             @select="openLesson"
             @create="openForm"
           />
           <MonthGrid
             v-else
             :days="monthDays"
+            :holiday-map="holidayMap"
             @select-day="(d) => { selected = d; anchor = d; viewMode = 'week'; load(); }"
             @select-lesson="openLesson"
           />

@@ -1,9 +1,10 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { showConfirmDialog, showToast } from 'vant';
 import api, { toastError } from '../api';
 import { isDesktop } from '../composables/layout';
 import { addDays, fmtDate } from '../utils';
+import { ensureHolidays, holidayOf } from '../utils/holidays';
 
 /** 新建单节课时：点击日历空档会带日期与时间进来，提交前先做冲突预检 */
 const props = defineProps({
@@ -22,6 +23,18 @@ const showDurPicker = ref(false);
 const showCalendar = ref(false);
 const submitting = ref(false);
 const conflictHint = ref('');
+
+/** 所选日期的节假日提示（法定节假日 / 调休补班日） */
+const holidayHint = computed(() => {
+  if (!form.date) return '';
+  const h = holidayOf(form.date);
+  if (!h) return '';
+  return h.type === 'workday' ? `${form.date} 为${h.name}调休补班日（需上班）` : `${form.date} 为${h.name}法定节假日`;
+});
+
+onMounted(() => {
+  ensureHolidays();
+});
 
 const hourCol = Array.from({ length: 17 }, (_, i) => String(i + 6).padStart(2, '0'));
 const minuteCol = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'));
@@ -168,6 +181,10 @@ async function submit() {
         </template>
       </van-field>
     </van-cell-group>
+
+    <div v-if="holidayHint" class="holiday-hint">
+      <van-icon name="flag-o" /> {{ holidayHint }}
+    </div>
 
     <div v-if="conflictHint" class="conflict-hint">
       <van-icon name="warning-o" /> {{ conflictHint }}

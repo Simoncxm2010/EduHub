@@ -22,8 +22,12 @@ const form = reactive({
   duration_min: 90, room: '', topic: '', from: todayStr, to: addDays(todayStr, 55),
 });
 const skipDates = ref([]);
+/** 手动恢复的日期（可覆盖节假日默认跳过） */
+const includeDates = ref([]);
+/** 法定节假日不排课（调休补班日照常排） */
+const skipHolidays = ref(true);
 const plan = ref([]);
-const summary = ref({ total: 0, ok: 0, conflict: 0, skip: 0 });
+const summary = ref({ total: 0, ok: 0, conflict: 0, skip: 0, holiday: 0 });
 const suggestion = ref(null);
 const loading = ref(false);
 const creating = ref(false);
@@ -48,6 +52,8 @@ watch(() => props.show, (visible) => {
   step.value = 'form';
   plan.value = [];
   skipDates.value = [];
+  includeDates.value = [];
+  skipHolidays.value = true;
   suggestion.value = null;
   form.from = todayStr;
   form.to = addDays(todayStr, 55);
@@ -120,6 +126,8 @@ async function preview() {
       from: form.from,
       to: form.to,
       skip_dates: skipDates.value,
+      include_dates: includeDates.value,
+      skip_holidays: skipHolidays.value,
       dry_run: true,
     });
     plan.value = d.plan;
@@ -132,12 +140,20 @@ async function preview() {
   }
 }
 
-/** 点某一行的日期可以排除 / 恢复 */
+/** 点某一行的日期可以排除 / 恢复；节假日默认跳过，点一下改成照常排课 */
 async function toggleSkip(row) {
   if (row.status === 'conflict') return;
-  const i = skipDates.value.indexOf(row.date);
-  if (i >= 0) skipDates.value.splice(i, 1);
-  else skipDates.value.push(row.date);
+  if (row.excluded) {
+    const i = skipDates.value.indexOf(row.date);
+    if (i >= 0) skipDates.value.splice(i, 1);
+  } else if (row.included) {
+    const i = includeDates.value.indexOf(row.date);
+    if (i >= 0) includeDates.value.splice(i, 1);
+  } else if (row.holiday?.type === 'holiday') {
+    includeDates.value.push(row.date);
+  } else {
+    skipDates.value.push(row.date);
+  }
   await preview();
 }
 
@@ -155,6 +171,8 @@ async function create() {
       from: form.from,
       to: form.to,
       skip_dates: skipDates.value,
+      include_dates: includeDates.value,
+      skip_holidays: skipHolidays.value,
       dry_run: false,
     });
     localStorage.setItem('eduhub_last_class', String(form.class_id));
@@ -216,9 +234,14 @@ async function create() {
           <van-field v-model="form.room" label="教室" placeholder="选填，用于检测教室冲突" />
           <van-field v-model="form.topic" label="主题" placeholder="选填，会写入每节课" />
           <van-field :model-value="rangeLabel" label="日期范围" readonly is-link @click="showRange = true" />
+          <van-cell center title="法定节假日不排课" :label="skipHolidays ? '假期自动跳过（补班日照常）' : '节假日也照常排课'">
+            <template #right-icon>
+              <van-switch v-model="skipHolidays" size="20" />
+            </template>
+          </van-cell>
         </van-cell-group>
         <div class="muted" style="margin: 10px 20px 0">
-          生成时会自动跳过与该班已有课程、或同一教室其他课程冲突的时段。
+          生成时会自动跳过法定节假日、与该班已有课程冲突、或同一教室被其他课程占用的日期。
         </div>
       </template>
 
@@ -227,8 +250,9 @@ async function create() {
         <div class="smart-summary">
           <div><b>{{ summary.total }}</b><span>个候选日期</span></div>
           <div class="ok"><b>{{ summary.ok }}</b><span>可排</span></div>
+          <div class="holiday"><b>{{ summary.holiday || 0 }}</b><span>节假日跳过</span></div>
           <div class="conflict"><b>{{ summary.conflict }}</b><span>冲突跳过</span></div>
-          <div class="skip"><b>{{ summary.skip }}</b><span>手动排除</span></div>
+          <div class="skip"><b>{{ summary.skip - (summary.holiday || 0) }}</b><span>手动排除</span></div>
         </div>
         <div class="muted" style="margin: 6px 18px 10px">
           每周 {{ form.weekdays.map((d) => '周' + WEEKDAY_SHORT[d]).join('、') }} ·
@@ -250,15 +274,24 @@ async function create() {
             />
             <div class="plan-date">
               <b>{{ cnDate(row.date) }}</b>
+              <span
+                v-if="row.holiday"
+                class="plan-hol"
+                :class="row.holiday.type"
+                :title="row.holiday.type === 'workday' ? `${row.holiday.name}调休补班日` : `${row.holiday.name}法定节假日`"
+              >{{ row.holiday.type === 'workday' ? '班' : '休' }}</span>
               <span v-if="row.reason" class="muted">{{ row.reason }}</span>
             </div>
             <van-tag v-if="row.status === 'ok'" plain type="success">可排</van-tag>
             <van-tag v-else-if="row.status === 'conflict'" plain type="warning">冲突</van-tag>
+            <van-tag v-else-if="row.holiday_skip" plain type="danger">节假日</van-tag>
             <van-tag v-else plain>已排除</van-tag>
           </div>
           <van-empty v-if="!plan.length" image="search" description="这段日期里没有符合星期条件的日子" />
         </div>
-        <div v-if="summary.ok" class="muted" style="margin: 10px 18px 0">点任意一行可以手动排除 / 恢复该天。</div>
+        <div v-if="summary.ok || summary.holiday" class="muted" style="margin: 10px 18px 0">
+          点任意一行可排除 / 恢复；节假日默认跳过，点一下改为照常排课。
+        </div>
       </template>
     </div>
 

@@ -8,6 +8,8 @@ const props = defineProps({
   lessonsByDate: { type: Object, default: () => ({}) },
   hourHeight: { type: Number, default: 62 },
   nowMinute: { type: Number, default: null },
+  /** date -> { name, type: 'holiday' | 'workday' }（国家法定节假日） */
+  holidayMap: { type: Object, default: () => ({}) },
 });
 const emit = defineEmits(['select', 'create']);
 
@@ -83,7 +85,9 @@ const layoutByDate = computed(() => {
 
 function blockStyle(b) {
   const top = ((b.start - startHour.value * 60) / 60) * props.hourHeight;
-  const height = Math.max(30, ((b.end - b.start) / 60) * props.hourHeight - 3);
+  // 跨零点的课（结束时间超出网格）裁剪到网格底，避免被 overflow:hidden 截断出锯齿
+  const visibleEnd = Math.min(b.end, endHour.value * 60);
+  const height = Math.max(30, ((visibleEnd - b.start) / 60) * props.hourHeight - 3);
   const width = 100 / b.cols;
   return {
     top: `${top}px`,
@@ -94,10 +98,20 @@ function blockStyle(b) {
   };
 }
 
+/** date 的节假日信息（null = 普通日） */
+function holidayOf(date) {
+  return props.holidayMap?.[date] ?? null;
+}
+
 /** 悬停时吸附到半小时，并显示将要排课的时间 */
 const hover = ref(null);
 
 function onColMove(e, date) {
+  // 悬停在课程块上时不显示「在此新建」指示——虚线压在已有课上会像幻影
+  if (e.target.closest('.wk-block')) {
+    if (hover.value) hover.value = null;
+    return;
+  }
   const rect = e.currentTarget.getBoundingClientRect();
   const raw = ((e.clientY - rect.top) / props.hourHeight) * 60 + startHour.value * 60;
   const snapped = Math.round(raw / 30) * 30;
@@ -131,9 +145,20 @@ function statusText(l) {
   <div class="wk">
     <div class="wk-head">
       <div class="wk-gutter" />
-      <div v-for="d in days" :key="d.date" class="wk-dayhead" :class="{ today: d.isToday }">
+      <div
+        v-for="d in days"
+        :key="d.date"
+        class="wk-dayhead"
+        :class="{ today: d.isToday, holiday: holidayOf(d.date)?.type === 'holiday' }"
+      >
         <span class="dow">{{ d.dow }}</span>
         <span class="num">{{ d.num }}</span>
+        <!-- 固定高度的节日行：无节日也占位，保证 7 列表头等高对齐 -->
+        <span
+          class="wk-hol"
+          :class="holidayOf(d.date)?.type"
+          :title="holidayOf(d.date)?.name"
+        >{{ holidayOf(d.date)?.name || '' }}</span>
       </div>
     </div>
 
@@ -152,7 +177,7 @@ function statusText(l) {
           v-for="d in days"
           :key="d.date"
           class="wk-col"
-          :class="{ today: d.isToday }"
+          :class="{ today: d.isToday, holiday: holidayOf(d.date)?.type === 'holiday' }"
           @mousemove="onColMove($event, d.date)"
           @mouseleave="onColLeave"
           @click="onColClick(d.date)"
