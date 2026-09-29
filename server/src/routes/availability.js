@@ -216,11 +216,13 @@ router.get('/match', h(async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 60);
   const room = String(req.query.room || '');
   const ignoreTeacherAvailability = req.query.ignore_teacher_availability === '1';
+  // 间隔是「赶到下一节课」的实际需要，但老师可以显式选择连它一起忽略
+  const ignoreGap = req.query.ignore_gap === '1';
 
   // 老师自己的可授课时段（勾选了忽略时按全天 08:00-22:00 处理）
   const teacherId = cls.teacher_id;
   // 老师两节课之间要留的间隔：排课时同样不能让两节挨太近
-  const teacherGap = minGapOf(teacherId);
+  const teacherGap = ignoreGap ? 0 : minGapOf(teacherId);
   const teacherWindows = ignoreTeacherAvailability
     ? [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_time: '08:00', end_time: '22:00' }))
     : listWindows(teacherId);

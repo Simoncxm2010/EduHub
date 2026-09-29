@@ -51,7 +51,11 @@ CREATE TABLE IF NOT EXISTS students (
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   name TEXT NOT NULL,
   phone TEXT NOT NULL DEFAULT '',
+  guardian_phone TEXT NOT NULL DEFAULT '',
   remark TEXT NOT NULL DEFAULT '',
+  -- 课时包：总购买节数 + 赠送节数；剩余 = total + bonus - 已消课时
+  lessons_total INTEGER NOT NULL DEFAULT 0,
+  lessons_bonus INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -196,6 +200,28 @@ CREATE TABLE IF NOT EXISTS lesson_changes (
 );
 CREATE INDEX IF NOT EXISTS idx_lesson_changes_lesson ON lesson_changes(lesson_id);
 CREATE INDEX IF NOT EXISTS idx_lesson_changes_class ON lesson_changes(class_id, created_at);
+
+-- 待补课：学生请假（或老师停课）后欠的那一节课，补上了/免补了才销账
+CREATE TABLE IF NOT EXISTS makeups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  missed_lesson_id INTEGER REFERENCES lessons(id) ON DELETE SET NULL,
+  missed_date TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT 'leave',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','scheduled','done','waived')),
+  makeup_lesson_id INTEGER REFERENCES lessons(id) ON DELETE SET NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+-- 同一节课同一学生只欠一次，重复登记不会产生第二条。
+-- 注意必须是「完整」唯一索引：写成 WHERE missed_lesson_id IS NOT NULL 的部分索引时，
+-- ON CONFLICT(student_id, missed_lesson_id) 匹配不上，插入会直接报错。
+DROP INDEX IF EXISTS idx_makeups_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_makeups_unique ON makeups(student_id, missed_lesson_id);
+CREATE INDEX IF NOT EXISTS idx_makeups_class ON makeups(class_id, status);
+CREATE INDEX IF NOT EXISTS idx_makeups_student ON makeups(student_id, status);
 `);
 
 /** 老库补列：SQLite 没有 ADD COLUMN IF NOT EXISTS */
@@ -318,6 +344,11 @@ ensureColumn('availability', 'week_parity', "TEXT NOT NULL DEFAULT 'all'");
 ensureColumn('availability', 'specific_date', 'TEXT');
 ensureColumn('availability', 'min_duration', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('availability', 'max_duration', 'INTEGER NOT NULL DEFAULT 0');
+
+// v0.8 起：补课班的课时包与家长联系方式
+ensureColumn('students', 'guardian_phone', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('students', 'lessons_total', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('students', 'lessons_bonus', 'INTEGER NOT NULL DEFAULT 0');
 
 /** 本地时区的今天，格式 YYYY-MM-DD */
 export function today() {

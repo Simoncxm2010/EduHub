@@ -6,6 +6,8 @@ import {
 } from '../util.js';
 import { findConflicts, conflictText } from '../conflicts.js';
 import { getHoliday, isHoliday, holidayLabel } from '../holidays.js';
+import { notify } from './notifications.js';
+import { markOwed, clearOwed, listMakeups, updateMakeup, owedByStudent, getMakeup } from '../makeups.js';
 
 const router = Router();
 router.use(authRequired);
@@ -35,6 +37,23 @@ function logLessonChange(actor, lesson, action, before, after) {
 function withParsedSlots(row) {
   const parse = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
   return { ...row, before: parse(row.before_json), after: parse(row.after_json) };
+}
+
+/**
+ * 通知一个班的学生（手动登记、没账号的自动跳过）。
+ * 调课/停课这类变动学生必须知道，否则人白跑一趟。
+ */
+function notifyClassStudents(classId, title, body, link = '') {
+  const rows = db.prepare(
+    'SELECT user_id FROM students WHERE class_id = ? AND user_id IS NOT NULL'
+  ).all(classId);
+  for (const r of rows) notify(r.user_id, title, body, link);
+}
+
+/** 一节课的时间地点写成一句人话，通知里用 */
+function slotText(date, startTime, durationMin = 0, room = '') {
+  const end = durationMin ? `-${minToTime(toMin(startTime) + Number(durationMin))}` : '';
+  return `${date} ${startTime}${end}${room ? ` · ${room}` : ''}`;
 }
 
 /** 只接受本站上传目录下的图片地址，避免把外部链接存进库 */
@@ -310,6 +329,44 @@ router.get('/changes', h(async (req, res) => {
   res.json({ changes: rows.map(withParsedSlots) });
 }));
 
+/**
+ * 待补课台账（班级维度）。必须注册在 /:id 之前。
+ * 老师最常问的两件事：谁还欠课、欠的是哪一节。
+ */
+router.get('/makeups', teacherOnly, h(async (req, res) => {
+  const cls = assertClassAccess(req.user, Number(req.query.class_id));
+  const status = req.query.status ? String(req.query.status) : null;
+  if (status && !['pending', 'scheduled', 'done', 'waived'].includes(status)) {
+    throw new ApiError(400, '状态不合法');
+  }
+  res.json({
+    makeups: listMakeups(cls.id, { status, limit: req.query.limit }),
+    owed_by_student: Object.fromEntries(owedByStudent(cls.id)),
+  });
+}));
+
+/** 销账：补上了 / 已约补课 / 免补 */
+router.put('/makeups/:id', teacherOnly, h(async (req, res) => {
+  const row = getMakeup(req.params.id);
+  if (!row) throw new ApiError(404, '补课记录不存在');
+  assertClassAccess(req.user, row.class_id);
+
+  // 先校验再落库，避免「校验失败但已经改了」
+  const body = req.body || {};
+  if (body.status !== undefined && !['pending', 'scheduled', 'done', 'waived'].includes(String(body.status))) {
+    throw new ApiError(400, '状态不合法');
+  }
+  if (body.makeup_lesson_id) {
+    const lesson = db.prepare('SELECT id, class_id FROM lessons WHERE id = ?').get(Number(body.makeup_lesson_id));
+    if (!lesson) throw new ApiError(404, '补课的那节课不存在');
+    if (lesson.class_id !== row.class_id) throw new ApiError(400, '补课课时必须属于同一班级');
+  }
+
+  const r = updateMakeup(row.id, body);
+  if (r?.error) throw new ApiError(400, r.error);
+  res.json({ makeup: r.makeup });
+}));
+
 /** 课时详情：名单 + 签到（含留痕） + 课堂记录 */
 router.get('/:id', h(async (req, res) => {
   const lesson = lessonWithClass(req.user, Number(req.params.id));
@@ -371,9 +428,21 @@ router.put('/:id', teacherOnly, h(async (req, res) => {
     logLessonChange(req.user, lesson, 'edit', {
       date: lesson.date, start_time: lesson.start_time, duration_min: lesson.duration_min, room: lesson.room,
     }, { date, start_time: startTime, duration_min: dur, room });
+    notifyClassStudents(lesson.class_id, `课程调整：${lesson.class_name}`,
+      `${slotText(lesson.date, lesson.start_time, lesson.duration_min, lesson.room)} 改为 ${slotText(date, startTime, dur, room)}`,
+      `/lessons/${lesson.id}`);
   } else if (status !== lesson.status) {
     logLessonChange(req.user, lesson, status === 'canceled' ? 'cancel' : status === 'scheduled' ? 'resume' : 'done',
       { status: lesson.status }, { status });
+    if (status === 'canceled') {
+      // 课不上了，之前挂在这节课上的欠课一并撤掉
+      db.prepare("DELETE FROM makeups WHERE missed_lesson_id = ? AND status = 'pending'").run(lesson.id);
+      notifyClassStudents(lesson.class_id, `课程取消：${lesson.class_name}`,
+        `${slotText(lesson.date, lesson.start_time, lesson.duration_min, room)} 已取消`, `/lessons/${lesson.id}`);
+    } else if (status === 'scheduled' && lesson.status === 'canceled') {
+      notifyClassStudents(lesson.class_id, `课程恢复：${lesson.class_name}`,
+        `${slotText(date, startTime, dur, room)} 恢复上课`, `/lessons/${lesson.id}`);
+    }
   }
 
   res.json({ lesson: lessonWithClass(req.user, lesson.id) });
@@ -419,6 +488,10 @@ router.post('/:id/reschedule', teacherOnly, h(async (req, res) => {
     .run(date, startTime, dur, room, lesson.id);
   logLessonChange(req.user, lesson, 'reschedule', payload.from,
     { ...payload.to, note: String(b.note || '').slice(0, 120) });
+  notifyClassStudents(lesson.class_id, `调课通知：${lesson.class_name}`,
+    `${slotText(payload.from.date, payload.from.start_time, payload.from.duration_min, payload.from.room)} → `
+    + `${slotText(date, startTime, dur, room)}${b.note ? `（${String(b.note).slice(0, 60)}）` : ''}`,
+    `/lessons/${lesson.id}`);
 
   res.json({ lesson: lessonWithClass(req.user, lesson.id), forced: conflicts.length > 0, ...payload });
 }));
@@ -467,6 +540,14 @@ router.post('/:id/swap', teacherOnly, h(async (req, res) => {
   }
   logLessonChange(req.user, a, 'swap', pickSlot(a), { ...pickSlot(b), with: b.id, with_class: b.class_name });
   logLessonChange(req.user, b, 'swap', pickSlot(b), { ...pickSlot(a), with: a.id, with_class: a.class_name });
+  notifyClassStudents(a.class_id, `课程对调：${a.class_name}`,
+    `${slotText(a.date, a.start_time, a.duration_min, a.room)} 与 ${b.class_name} 的 ${slotText(b.date, b.start_time, b.duration_min, b.room)} 对调`,
+    `/lessons/${a.id}`);
+  if (b.class_id !== a.class_id) {
+    notifyClassStudents(b.class_id, `课程对调：${b.class_name}`,
+      `${slotText(b.date, b.start_time, b.duration_min, b.room)} 与 ${a.class_name} 的 ${slotText(a.date, a.start_time, a.duration_min, a.room)} 对调`,
+      `/lessons/${b.id}`);
+  }
 
   res.json({
     a: lessonWithClass(req.user, a.id),
@@ -541,6 +622,19 @@ router.put('/:id/attendance', teacherOnly, h(async (req, res) => {
   const attendance = db.prepare(
     'SELECT student_id, status, signature, photo, signed_at, checked_at FROM attendance WHERE lesson_id = ?'
   ).all(lesson.id);
+
+  // 请假 -> 记一笔待补课；改成出勤/迟到 -> 把这笔欠课撤掉
+  const seen = new Set();
+  for (const it of items) {
+    const sid = Number(it?.student_id);
+    if (!inClass.has(sid)) continue;
+    seen.add(sid);
+    if (it?.status === 'leave') markOwed(sid, lesson.class_id, lesson);
+    else clearOwed(sid, lesson.id);
+  }
+  // 这次没提交到的学生，签到记录已被清掉，欠课也不该再挂着
+  for (const sid of inClass) if (!seen.has(sid)) clearOwed(sid, lesson.id);
+
   res.json({ attendance });
 }));
 
@@ -582,6 +676,11 @@ router.put('/:id/attendance/me', studentOnly, h(async (req, res) => {
   const mine = db.prepare(
     'SELECT student_id, status, signature, photo, signed_at, checked_at FROM attendance WHERE lesson_id = ? AND student_id = ?'
   ).get(lesson.id, me.id);
+
+  // 学生自己申请请假同样要记一笔待补课
+  if (status === 'leave') markOwed(me.id, lesson.class_id, lesson);
+  else clearOwed(me.id, lesson.id);
+
   res.json({ attendance: mine, student_id: me.id });
 }));
 
@@ -698,7 +797,109 @@ router.post('/bulk-status', teacherOnly, h(async (req, res) => {
   const dates = [...new Set(targets.map((t) => t.date))].sort();
   // 哪些节假日被整体停掉了，回给前端做提示
   const holidays = [...new Set(dates.map((d) => holidayLabel(d)).filter(Boolean))];
+  // 停掉的课不再欠补课，撤掉挂在这些课上的待补记录
+  if (status === 'canceled') {
+    const del = db.prepare("DELETE FROM makeups WHERE missed_lesson_id = ? AND status = 'pending'");
+    for (const t of targets) del.run(t.id);
+  }
   res.json({ updated: targets.length, dates, holidays, status, only_holidays: onlyHolidays });
+}));
+
+/**
+ * 按周批量调课：把某班一段日期内的课整体顺延若干天，或统一改到另一个时间/教室。
+ * 用于「这周的课整体推迟一周」「从下周起都改到 19:00」这类整段调整。
+ *
+ * 关键点：整段一起挪时，必须把**所有要挪的课**都排除出冲突判定，
+ * 否则它们会跟自己人（还没挪的那些）报假冲突。
+ */
+router.post('/batch-reschedule', teacherOnly, h(async (req, res) => {
+  const b = req.body || {};
+  const cls = assertClassAccess(req.user, Number(b.class_id));
+  const { from, to } = b;
+  if (!isDate(from) || !isDate(to)) throw new ApiError(400, '请选择日期范围');
+  if (to < from) throw new ApiError(400, '结束日期不能早于开始日期');
+  if (eachDate(from, to).length > 120) throw new ApiError(400, '一次最多处理 120 天，请缩短范围');
+
+  const hasShift = b.shift_days !== undefined && b.shift_days !== null && b.shift_days !== '';
+  const shiftDays = hasShift ? Number(b.shift_days) : null;
+  const newTime = b.start_time ? String(b.start_time) : null;
+  const hasRoom = b.room !== undefined && b.room !== null;
+  const newRoom = hasRoom ? String(b.room) : null;
+
+  if (shiftDays === null && !newTime && !hasRoom) {
+    throw new ApiError(400, '请指定顺延天数、新的开始时间或新教室');
+  }
+  if (shiftDays !== null && (!Number.isInteger(shiftDays) || shiftDays === 0 || Math.abs(shiftDays) > 60)) {
+    throw new ApiError(400, '顺延天数需为 -60 到 60 之间的非零整数');
+  }
+  if (newTime && !isTime(newTime)) throw new ApiError(400, '开始时间格式不正确');
+
+  const rows = db.prepare(`
+    SELECT * FROM lessons WHERE class_id = ? AND date BETWEEN ? AND ? AND status != 'canceled'
+    ORDER BY date, start_time
+  `).all(cls.id, from, to);
+  if (!rows.length) {
+    return res.json({ plan: [], summary: { total: 0, ok: 0, conflict: 0 }, settings: { from, to, shift_days: shiftDays, start_time: newTime, room: newRoom } });
+  }
+
+  const movingIds = rows.map((l) => l.id);
+  const plan = rows.map((l) => {
+    const date = shiftDays === null ? l.date : addDays(l.date, shiftDays);
+    const startTime = newTime || l.start_time;
+    const room = hasRoom ? newRoom : l.room;
+    const conflicts = findConflicts(req.user.id, {
+      class_id: cls.id, date, start_time: startTime, duration_min: l.duration_min, room, exclude_id: movingIds,
+    });
+    return {
+      id: l.id,
+      from: { date: l.date, start_time: l.start_time, room: l.room },
+      to: { date, start_time: startTime, room },
+      status: conflicts.length ? 'conflict' : 'ok',
+      reason: conflicts.length ? conflictText(conflicts[0]) : '',
+    };
+  });
+
+  const summary = {
+    total: plan.length,
+    ok: plan.filter((p) => p.status === 'ok').length,
+    conflict: plan.filter((p) => p.status === 'conflict').length,
+  };
+  const settings = { from, to, shift_days: shiftDays, start_time: newTime, room: newRoom };
+
+  if (b.dry_run !== false) return res.json({ plan, summary, settings });
+
+  const onlyOk = b.skip_conflicts !== false;
+  const targets = plan.filter((p) => p.status === 'ok' || (!onlyOk && p.status === 'conflict'));
+  if (!targets.length) return res.json({ updated: 0, plan, summary, settings });
+
+  const upd = db.prepare('UPDATE lessons SET date = ?, start_time = ?, room = ? WHERE id = ?');
+  db.exec('BEGIN');
+  try {
+    for (const p of targets) upd.run(p.to.date, p.to.start_time, p.to.room, p.id);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+
+  for (const p of targets) {
+    const lesson = db.prepare('SELECT * FROM lessons WHERE id = ?').get(p.id);
+    logLessonChange(req.user, lesson, 'reschedule', p.from, { ...p.to, batch: true });
+  }
+  // 整段通知一次就够，不必每节课发一条
+  const first = targets[0];
+  notifyClassStudents(cls.id, `课程调整：${cls.name}`,
+    `${targets.length} 节课的时间有变动，${slotText(first.from.date, first.from.start_time)} 起调整为 `
+    + `${slotText(first.to.date, first.to.start_time, 0, first.to.room)}${targets.length > 1 ? ' 等' : ''}`,
+    `/schedule`);
+
+  res.json({
+    updated: targets.length,
+    skipped: plan.filter((p) => !targets.includes(p)),
+    plan,
+    summary,
+    settings,
+  });
 }));
 
 export default router;

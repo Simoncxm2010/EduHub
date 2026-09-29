@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { db, today } from '../db.js';
 import { authRequired, teacherOnly, studentOnly, assertClassAccess, roleAtLeast } from '../middleware.js';
 import { h, ApiError, genInviteCode, pickColor, csvCell } from '../util.js';
+import { creditsOfClass } from '../credits.js';
+import { owedByStudent } from '../makeups.js';
 
 const router = Router();
 router.use(authRequired);
@@ -52,15 +54,52 @@ router.post('/join', studentOnly, h(async (req, res) => {
   res.status(201).json({ class: cls });
 }));
 
-/** 班级详情（含学生名单） */
+/** 班级详情（含学生名单、课时余额与欠课数） */
 router.get('/:id', h(async (req, res) => {
   const cls = assertClassAccess(req.user, Number(req.params.id));
   const teacher = db.prepare('SELECT name, phone FROM users WHERE id = ?').get(cls.teacher_id);
   const students = db.prepare('SELECT * FROM students WHERE class_id = ? ORDER BY created_at, id').all(cls.id);
+
+  // 课时余额与待补课数一次算完，避免前端逐个学生再问一遍
+  const credits = creditsOfClass(cls.id);
+  const owed = owedByStudent(cls.id);
+  const withExtra = students.map((s) => ({
+    ...s,
+    credits: credits.get(s.id) || { lessons_total: 0, lessons_bonus: 0, used: 0, remaining: 0, low: false, owed: false },
+    owed_makeups: owed.get(s.id) || 0,
+  }));
+
   const mine = req.user.role === 'student'
     ? db.prepare('SELECT id FROM students WHERE class_id = ? AND user_id = ?').get(cls.id, req.user.id)
     : null;
-  res.json({ class: cls, teacher, students, my_student_id: mine?.id ?? null });
+  res.json({
+    class: cls,
+    teacher,
+    students: withExtra,
+    my_student_id: mine?.id ?? null,
+    // 班里课时余额不足的人数，让老师一眼看到该提醒续费了
+    low_credit_count: withExtra.filter((s) => s.credits.low).length,
+  });
+}));
+
+/** 整班课时余额（课时包续费提醒用） */
+router.get('/:id/credits', teacherOnly, h(async (req, res) => {
+  const cls = assertClassAccess(req.user, Number(req.params.id));
+  const students = db.prepare(
+    'SELECT id, name, phone, guardian_phone, lessons_total, lessons_bonus FROM students WHERE class_id = ? ORDER BY created_at, id'
+  ).all(cls.id);
+  const credits = creditsOfClass(cls.id);
+  const owed = owedByStudent(cls.id);
+  const rows = students.map((s) => ({
+    student_id: s.id,
+    name: s.name,
+    phone: s.phone,
+    guardian_phone: s.guardian_phone,
+    ...(credits.get(s.id) || { lessons_total: 0, lessons_bonus: 0, used: 0, remaining: 0, low: false, owed: false }),
+    owed_makeups: owed.get(s.id) || 0,
+  }));
+  rows.sort((a, b) => a.remaining - b.remaining || a.name.localeCompare(b.name));
+  res.json({ students: rows, low_credit_count: rows.filter((r) => r.low).length });
 }));
 
 /** 更新班级信息（教师） */
@@ -86,11 +125,48 @@ router.delete('/:id', teacherOnly, h(async (req, res) => {
 /** 添加学生（教师手动登记，可无账号） */
 router.post('/:id/students', teacherOnly, h(async (req, res) => {
   const cls = assertClassAccess(req.user, Number(req.params.id));
-  const { name, phone = '', remark = '' } = req.body || {};
+  const { name, phone = '', remark = '', guardian_phone = '', lessons_total = 0, lessons_bonus = 0 } = req.body || {};
   if (!name || !String(name).trim()) throw new ApiError(400, '请填写学生姓名');
-  const r = db.prepare('INSERT INTO students (class_id, name, phone, remark) VALUES (?, ?, ?, ?)')
-    .run(cls.id, String(name).trim(), String(phone), String(remark));
+  const total = Math.min(Math.max(Number(lessons_total) || 0, 0), 10000);
+  const bonus = Math.min(Math.max(Number(lessons_bonus) || 0, 0), 10000);
+  const r = db.prepare(`
+    INSERT INTO students (class_id, name, phone, guardian_phone, remark, lessons_total, lessons_bonus)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(cls.id, String(name).trim(), String(phone), String(guardian_phone), String(remark), total, bonus);
   res.status(201).json({ student: db.prepare('SELECT * FROM students WHERE id = ?').get(r.lastInsertRowid) });
+}));
+
+/** 修改学生资料与课时包（教师）：姓名、联系方式、购买/赠送节数 */
+router.put('/:id/students/:sid', teacherOnly, h(async (req, res) => {
+  const cls = assertClassAccess(req.user, Number(req.params.id));
+  const cur = db.prepare('SELECT * FROM students WHERE id = ? AND class_id = ?').get(Number(req.params.sid), cls.id);
+  if (!cur) throw new ApiError(404, '学生不存在');
+  const b = req.body || {};
+  const name = b.name === undefined ? cur.name : String(b.name).trim();
+  if (!name) throw new ApiError(400, '学生姓名不能为空');
+  const clamp = (v, fallback) => {
+    if (v === undefined) return fallback;
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw new ApiError(400, '课时数必须是数字');
+    // 负数直接拒绝而不是悄悄归零，否则前端传错只会看到余额莫名其妙变了
+    if (n < 0) throw new ApiError(400, '课时数不能为负数');
+    return Math.min(Math.round(n), 10000);
+  };
+  db.prepare(`
+    UPDATE students SET name = ?, phone = ?, guardian_phone = ?, remark = ?,
+      lessons_total = ?, lessons_bonus = ? WHERE id = ?
+  `).run(
+    name,
+    b.phone === undefined ? cur.phone : String(b.phone),
+    b.guardian_phone === undefined ? cur.guardian_phone : String(b.guardian_phone),
+    b.remark === undefined ? cur.remark : String(b.remark),
+    clamp(b.lessons_total, cur.lessons_total),
+    clamp(b.lessons_bonus, cur.lessons_bonus),
+    cur.id
+  );
+  const student = db.prepare('SELECT * FROM students WHERE id = ?').get(cur.id);
+  const credits = creditsOfClass(cls.id).get(cur.id);
+  res.json({ student, credits });
 }));
 
 /** 移除学生（教师） */
