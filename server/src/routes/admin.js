@@ -1,7 +1,10 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
-import { db } from '../db.js';
-import { authRequired, adminOnly, superOnly, roleAtLeast, ROLE_LEVEL } from '../middleware.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { db, dbPath, uploadsDir } from '../db.js';
+import { authRequired, adminOnly, superOnly, ROLE_LEVEL } from '../middleware.js';
 import { h, ApiError } from '../util.js';
 
 const router = Router();
@@ -9,6 +12,8 @@ router.use(authRequired, adminOnly);
 
 const ROLES = ['student', 'teacher', 'admin', 'super'];
 const ROLE_CN = { student: '学生', teacher: '教师', admin: '管理员', super: '超级管理员' };
+/** 计入审计的敏感动作（超管可按此筛选审计日志） */
+const AUDIT_ACTIONS = ['create_user', 'set_role', 'set_status', 'reset_password', 'delete_user'];
 
 function publicUser(u) {
   return {
@@ -23,6 +28,24 @@ function publicUser(u) {
     student_count: u.student_count ?? undefined,
     lesson_count: u.lesson_count ?? undefined,
   };
+}
+
+/**
+ * 审计：管理员敏感操作落库（建号/改角色/启停用/重置密码/删号）。
+ * 仅超管（运维/开发）可查——机构管理员的日常操作对普通管理员不可见。
+ */
+function logAudit(req, action, target, detail = '') {
+  try {
+    db.prepare(`
+      INSERT INTO audit_logs (operator_id, operator_name, operator_role, action, target_id, target_name, detail)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      req.user.id, req.user.name, req.user.role, action,
+      target?.id ?? null, target?.name ?? '', String(detail).slice(0, 300)
+    );
+  } catch {
+    // 审计失败不阻断主流程
+  }
 }
 
 /** 系统概览 */
@@ -96,6 +119,7 @@ router.put('/users/:id/role', h(async (req, res) => {
   if (target.role === 'super' && !isSuper) throw new ApiError(403, '无权修改超级管理员');
 
   db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, id);
+  logAudit(req, 'set_role', target, `${target.role} → ${role}`);
   const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   res.json({ user: publicUser(updated) });
 }));
@@ -115,6 +139,7 @@ router.put('/users/:id/status', h(async (req, res) => {
   }
 
   db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, id);
+  logAudit(req, 'set_status', target, `账号${status === 'active' ? '启用' : '停用'}`);
   const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   res.json({ user: publicUser(updated) });
 }));
@@ -130,6 +155,7 @@ router.put('/users/:id/password', h(async (req, res) => {
   if (ROLE_LEVEL[target.role] > ROLE_LEVEL[req.user.role]) throw new ApiError(403, '无权修改该账号的密码');
 
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync(password, 10), id);
+  logAudit(req, 'reset_password', target);
   res.json({ ok: true });
 }));
 
@@ -151,7 +177,9 @@ router.post('/users', h(async (req, res) => {
   const r = db.prepare(
     'INSERT INTO users (name, phone, password_hash, role) VALUES (?, ?, ?, ?)'
   ).run(String(b.name).trim(), String(b.phone), bcrypt.hashSync(String(b.password), 10), role);
-  res.status(201).json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(r.lastInsertRowid)) });
+  const created = db.prepare('SELECT * FROM users WHERE id = ?').get(r.lastInsertRowid);
+  logAudit(req, 'create_user', created, `角色：${ROLE_CN[role] || role}`);
+  res.status(201).json({ user: publicUser(created) });
 }));
 
 /** 删除账号（仅超管，且不能删除自己与其他超管） */
@@ -162,6 +190,7 @@ router.delete('/users/:id', superOnly, h(async (req, res) => {
   if (target.id === req.user.id) throw new ApiError(400, '不能删除自己的账号');
   if (target.role === 'super') throw new ApiError(403, '不能删除超级管理员账号');
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  logAudit(req, 'delete_user', target);
   res.json({ ok: true });
 }));
 
@@ -176,6 +205,65 @@ router.get('/classes', h(async (req, res) => {
     LIMIT 500
   `).all();
   res.json({ classes: rows });
+}));
+
+/**
+ * 系统信息（仅超管——运维/开发领地）：运行环境、数据库与上传目录体积、业务量。
+ * 普通管理员（机构管理者）看不到这些，避免把运维细节暴露给日常管理。
+ */
+router.get('/system', superOnly, h(async (req, res) => {
+  const stat = (p) => { try { return fs.statSync(p).size; } catch { return 0; } };
+  const dirStat = (dir) => {
+    try {
+      const files = fs.readdirSync(dir);
+      const size = files.reduce((n, f) => n + stat(path.join(dir, f)), 0);
+      return { count: files.length, size };
+    } catch {
+      return { count: 0, size: 0 };
+    }
+  };
+  const uploads = dirStat(uploadsDir);
+  const mu = process.memoryUsage();
+
+  res.json({
+    node: process.version,
+    platform: `${os.platform()} ${os.arch()}`,
+    uptime_s: Math.round(process.uptime()),
+    memory: {
+      rss_mb: Math.round(mu.rss / 1048576),
+      heap_used_mb: Math.round(mu.heapUsed / 1048576),
+    },
+    db_size: stat(dbPath),
+    uploads,
+    counts: {
+      users: db.prepare('SELECT COUNT(*) AS n FROM users').get().n,
+      disabled_users: db.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'disabled'").get().n,
+      classes: db.prepare('SELECT COUNT(*) AS n FROM classes').get().n,
+      students: db.prepare('SELECT COUNT(*) AS n FROM students').get().n,
+      lessons: db.prepare('SELECT COUNT(*) AS n FROM lessons').get().n,
+      lessons_done: db.prepare("SELECT COUNT(*) AS n FROM lessons WHERE status = 'done'").get().n,
+      pending_requests: db.prepare("SELECT COUNT(*) AS n FROM requests WHERE status = 'pending'").get().n,
+    },
+  });
+}));
+
+/** 审计日志（仅超管）：管理员的建号/改角色/启停用/重置密码/删号记录 */
+router.get('/audit', superOnly, h(async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const action = String(req.query.action || '');
+  const conds = [];
+  const params = [];
+  if (action && AUDIT_ACTIONS.includes(action)) {
+    conds.push('action = ?');
+    params.push(action);
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const rows = db.prepare(`
+    SELECT * FROM audit_logs ${where} ORDER BY id DESC LIMIT ? OFFSET ?
+  `).all(...params, limit, offset);
+  const total = db.prepare(`SELECT COUNT(*) AS n FROM audit_logs ${where}`).get(...params).n;
+  res.json({ logs: rows, total, actions: AUDIT_ACTIONS });
 }));
 
 export default router;

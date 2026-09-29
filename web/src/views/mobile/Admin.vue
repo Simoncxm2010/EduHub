@@ -15,6 +15,46 @@ const classes = ref([]);
 const loading = ref(true);
 const filterRole = ref('');
 
+/* 超管专属：系统信息与审计日志（运维/开发领地） */
+const system = ref(null);
+const auditLogs = ref([]);
+const auditTotal = ref(0);
+const auditLoading = ref(false);
+const AUDIT_CN = {
+  create_user: '新建账号', set_role: '调整角色', set_status: '启停用账号',
+  reset_password: '重置密码', delete_user: '删除账号',
+};
+
+function fmtBytes(n) {
+  if (!n) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+function fmtUptime(sec) {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  return d ? `${d} 天 ${h} 小时` : `${h} 小时`;
+}
+
+async function loadSuperPanels() {
+  if (!auth.isSuper) return;
+  auditLoading.value = true;
+  try {
+    const [sys, audit] = await Promise.all([
+      api.get('/admin/system'),
+      api.get('/admin/audit', { params: { limit: 30 } }),
+    ]);
+    system.value = sys;
+    auditLogs.value = audit.logs;
+    auditTotal.value = audit.total;
+  } catch (e) {
+    toastError(e);
+  } finally {
+    auditLoading.value = false;
+  }
+}
+
 const showActions = ref(false);
 const current = ref(null);
 const showReset = ref(false);
@@ -26,14 +66,17 @@ async function load() {
   try {
     const params = {};
     if (filterRole.value) params.role = filterRole.value;
-    const [s, u, c] = await Promise.all([
-      api.get('/admin/stats'),
-      api.get('/admin/users', { params }),
-      api.get('/admin/classes'),
-    ]);
+    const calls = [api.get('/admin/stats'), api.get('/admin/users', { params }), api.get('/admin/classes')];
+    if (auth.isSuper) calls.push(api.get('/admin/system'), api.get('/admin/audit', { params: { limit: 20 } }));
+    const [s, u, c, sys, audit] = await Promise.all(calls);
     stats.value = s;
     users.value = u.users;
     classes.value = c.classes;
+    if (auth.isSuper) {
+      system.value = sys;
+      auditLogs.value = audit.logs;
+      auditTotal.value = audit.total;
+    }
   } catch (e) {
     toastError(e);
   } finally {
@@ -207,6 +250,48 @@ async function removeUser() {
           </div>
         </div>
         <van-empty v-if="!classes.length" image="search" description="还没有班级" />
+      </van-tab>
+
+      <!-- 系统信息（仅超管：运维/开发领地） -->
+      <van-tab v-if="auth.isSuper" title="系统信息" name="system">
+        <div class="card">
+          <div v-if="!system" class="muted" style="text-align: center; padding: 14px 0">加载中…</div>
+          <template v-else>
+            <div class="muted" style="margin-bottom: 10px">仅超管可见——机构管理员看不到运维细节</div>
+            <div v-for="i in [
+              { label: 'Node 版本', value: system.node },
+              { label: '运行平台', value: system.platform },
+              { label: '运行时长', value: fmtUptime(system.uptime_s) },
+              { label: '内存占用', value: `${system.memory.rss_mb} MB` },
+              { label: '数据库体积', value: fmtBytes(system.db_size) },
+              { label: '上传目录', value: `${fmtBytes(system.uploads.size)} · ${system.uploads.count} 个文件` },
+              { label: '账号 / 班级', value: `${system.counts.users} 个（停用 ${system.counts.disabled_users}）· ${system.counts.classes} 班` },
+            ]" :key="i.label" class="attend-row">
+              <div class="attend-name"><span class="muted">{{ i.label }}</span></div>
+              <div style="font-size: 13.5px; font-weight: 600; text-align: right">{{ i.value }}</div>
+            </div>
+          </template>
+        </div>
+      </van-tab>
+
+      <!-- 审计日志（仅超管） -->
+      <van-tab v-if="auth.isSuper" title="审计日志" name="audit">
+        <div v-for="l in auditLogs" :key="l.id" class="card">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <van-tag type="primary" plain>{{ AUDIT_CN[l.action] || l.action }}</van-tag>
+            <span style="font-weight: 600; font-size: 14px">{{ l.operator_name }}</span>
+            <van-tag plain>{{ l.operator_role === 'super' ? '超管' : '管理员' }}</van-tag>
+            <div style="flex: 1" />
+            <span class="muted">{{ (l.created_at || '').slice(5, 16) }}</span>
+          </div>
+          <div class="muted" style="margin-top: 6px">
+            对象：{{ l.target_name || '—' }}<template v-if="l.detail"> · {{ l.detail }}</template>
+          </div>
+        </div>
+        <van-empty v-if="!auditLogs.length" image="search" description="暂无审计记录" />
+        <div v-if="auditTotal > auditLogs.length" class="muted" style="text-align: center; padding: 6px 0 14px">
+          共 {{ auditTotal }} 条，手机端仅展示最近 {{ auditLogs.length }} 条
+        </div>
       </van-tab>
     </van-tabs>
 

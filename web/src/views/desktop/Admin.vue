@@ -147,18 +147,87 @@ async function removeUser(u) {
   }
 }
 
+/* ---------------- 超管专属：系统信息与审计日志（运维/开发领地） ---------------- */
+const system = ref(null);
+const auditLogs = ref([]);
+const auditTotal = ref(0);
+const auditAction = ref('');
+const auditOffset = ref(0);
+const auditLoading = ref(false);
+const AUDIT_CN = {
+  create_user: '新建账号', set_role: '调整角色', set_status: '启停用账号',
+  reset_password: '重置密码', delete_user: '删除账号',
+};
+const AUDIT_ACTIONS = Object.keys(AUDIT_CN);
+
+async function loadSuperPanels() {
+  if (!auth.isSuper) return;
+  auditLoading.value = true;
+  try {
+    const [sys, audit] = await Promise.all([
+      api.get('/admin/system'),
+      api.get('/admin/audit', {
+        params: { limit: 50, offset: auditOffset.value, action: auditAction.value || undefined },
+      }),
+    ]);
+    system.value = sys;
+    auditLogs.value = audit.logs;
+    auditTotal.value = audit.total;
+  } catch (e) {
+    toastError(e);
+  } finally {
+    auditLoading.value = false;
+  }
+}
+
+function filterAudit() {
+  auditOffset.value = 0;
+  loadSuperPanels();
+}
+
+function fmtBytes(n) {
+  if (!n) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`;
+  return `${(n / 1073741824).toFixed(2)} GB`;
+}
+
+function fmtUptime(sec) {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return d ? `${d} 天 ${h} 小时` : h ? `${h} 小时 ${m} 分` : `${m} 分钟`;
+}
+
+const systemItems = computed(() => {
+  if (!system.value) return [];
+  const s = system.value;
+  return [
+    { label: 'Node 版本', value: s.node },
+    { label: '运行平台', value: s.platform },
+    { label: '运行时长', value: fmtUptime(s.uptime_s) },
+    { label: '内存占用', value: `${s.memory.rss_mb} MB（堆 ${s.memory.heap_used_mb} MB）` },
+    { label: '数据库体积', value: fmtBytes(s.db_size) },
+    { label: '上传目录', value: `${fmtBytes(s.uploads.size)} · ${s.uploads.count} 个文件` },
+    { label: '账号 / 班级', value: `${s.counts.users} 个账号（停用 ${s.counts.disabled_users}）· ${s.counts.classes} 个班级` },
+    { label: '课时 / 待审', value: `${s.counts.lessons} 节（已完成 ${s.counts.lessons_done}）· ${s.counts.pending_requests} 条待审` },
+  ];
+});
+
 </script>
 
 <template>
   <div class="d-page">
     <div class="d-head">
-      <div>
-        <h1>管理后台</h1>
-        <div class="sub">
-          当前身份：{{ auth.roleLabel }}
-          {{ auth.isSuper ? ' · 可分配管理员与超管权限' : ' · 可管理教师与学生账号' }}
+        <div>
+          <h1>管理后台</h1>
+          <div class="sub">
+            当前身份：{{ auth.roleLabel }}
+            <template v-if="auth.isSuper"> · 运维与开发：系统信息、审计日志、账号与角色</template>
+            <template v-else> · 机构管理者：管理教师与学生、班级与审批</template>
+          </div>
         </div>
-      </div>
       <div class="d-head-actions">
         <button class="d-btn primary" @click="showCreate = true">新建账号</button>
       </div>
@@ -192,6 +261,8 @@ async function removeUser(u) {
       <div class="d-tabs">
         <button :class="{ on: tab === 'users' }" @click="tab = 'users'">用户与权限</button>
         <button :class="{ on: tab === 'classes' }" @click="tab = 'classes'">全部班级</button>
+        <button v-if="auth.isSuper" :class="{ on: tab === 'system' }" @click="tab = 'system'; loadSuperPanels()">系统信息</button>
+        <button v-if="auth.isSuper" :class="{ on: tab === 'audit' }" @click="tab = 'audit'; loadSuperPanels()">审计日志</button>
       </div>
       <div class="spacer" />
       <template v-if="tab === 'users'">
@@ -276,7 +347,7 @@ async function removeUser(u) {
     </div>
 
     <!-- 全部班级 -->
-    <div v-else class="d-card">
+    <div v-else-if="tab === 'classes'" class="d-card">
       <div v-if="!classes.length" class="d-empty"><strong>还没有班级</strong></div>
       <div v-else class="d-scroll">
         <table class="d-table">
@@ -306,6 +377,68 @@ async function removeUser(u) {
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- 系统信息（仅超管：运维/开发领地） -->
+    <div v-else-if="tab === 'system'" class="d-card">
+      <div v-if="!system" class="d-empty">加载中…</div>
+      <template v-else>
+        <div class="d-toolbar" style="margin-bottom: 12px">
+          <span class="d-badge info">运行环境</span>
+          <span class="d-badge mute">这些信息仅超管可见——机构管理员看不到运维细节</span>
+        </div>
+        <div class="d-rows">
+          <div v-for="i in systemItems" :key="i.label" class="d-row">
+            <div class="grow">
+              <div class="meta">{{ i.label }}</div>
+              <div class="title" style="font-size: 14px">{{ i.value }}</div>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- 审计日志（仅超管） -->
+    <div v-else-if="tab === 'audit'" class="d-card">
+      <div class="d-toolbar" style="margin-bottom: 12px">
+        <span class="d-badge info">管理员的建号 / 改角色 / 启停用 / 重置密码 / 删号记录</span>
+        <div class="spacer" />
+        <select v-model="auditAction" class="d-select" style="width: 150px" @change="filterAudit">
+          <option value="">全部动作</option>
+          <option v-for="(cn, key) in AUDIT_CN" :key="key" :value="key">{{ cn }}</option>
+        </select>
+        <button class="d-btn" :disabled="auditLoading" @click="filterAudit">刷新</button>
+      </div>
+      <div v-if="auditLoading" class="d-empty">加载中…</div>
+      <div v-else-if="!auditLogs.length" class="d-empty"><strong>暂无审计记录</strong>管理员的敏感操作会记录在这里</div>
+      <div v-else class="d-scroll" style="max-height: 480px">
+        <table class="d-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>操作人</th>
+              <th>动作</th>
+              <th>对象</th>
+              <th>详情</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="l in auditLogs" :key="l.id">
+              <td style="white-space: nowrap; font-size: 12.5px; color: var(--eduhub-muted)">{{ l.created_at }}</td>
+              <td>
+                <span class="strong">{{ l.operator_name }}</span>
+                <span class="d-badge mute" style="margin-left: 6px">{{ l.operator_role === 'super' ? '超管' : '管理员' }}</span>
+              </td>
+              <td><span class="d-badge info">{{ AUDIT_CN[l.action] || l.action }}</span></td>
+              <td>{{ l.target_name || '—' }}</td>
+              <td style="font-size: 12.5px; color: var(--eduhub-muted)">{{ l.detail || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-if="auditTotal > auditLogs.length" class="d-inline" style="margin-top: 12px">
+        <button class="d-btn sm" :disabled="auditLoading" @click="auditOffset += 50; loadSuperPanels()">加载更多（共 {{ auditTotal }} 条）</button>
       </div>
     </div>
 

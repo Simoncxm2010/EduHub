@@ -141,6 +141,21 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read);
+
+-- 审计日志：管理员敏感操作（建号/改角色/启停用/重置密码/删号），仅超管可查
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  operator_id INTEGER NOT NULL,
+  operator_name TEXT NOT NULL,
+  operator_role TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_id INTEGER,
+  target_name TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
 `);
 
 /** 老库补列：SQLite 没有 ADD COLUMN IF NOT EXISTS */
