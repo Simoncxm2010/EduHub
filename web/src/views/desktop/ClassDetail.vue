@@ -6,6 +6,7 @@ import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import Modal from '../../ui/Modal.vue';
 import PhotoField from '../../components/PhotoField.vue';
+import ChangeLogList from '../../components/ChangeLogList.vue';
 import { addDays, endTime, fmtDate, LESSON_STATUS, BADGE } from '../../utils';
 import { useBack } from '../../composables/back';
 
@@ -29,6 +30,22 @@ const bulk = ref({ from: todayStr, to: addDays(todayStr, 7), status: 'canceled',
 const showSettings = ref(false);
 const settings = ref({ name: '', subject: '', description: '', rate: 0 });
 const busy = ref(false);
+
+/** 调课 / 停课留痕（按需加载，不拖慢首屏） */
+const changes = ref([]);
+const loadingChanges = ref(false);
+
+async function loadChanges() {
+  loadingChanges.value = true;
+  try {
+    const d = await api.get('/lessons/changes', { params: { class_id: classId, limit: 30 } });
+    changes.value = d.changes;
+  } catch (e) {
+    toastError(e);
+  } finally {
+    loadingChanges.value = false;
+  }
+}
 
 /* 收费结算（按学生月度统计） */
 const billMonth = ref(todayStr.slice(0, 7));
@@ -404,6 +421,16 @@ function statusOf(l) {
             <div style="font-size: 12.5px; color: #98a1b5; text-align: center">
               复制链接发给学生，注册后自动加入本班
             </div>
+          </div>
+
+          <div class="d-card">
+            <div class="d-card-title">
+              <span>调课记录</span>
+              <button class="d-btn sm" :disabled="loadingChanges" @click="loadChanges">
+                {{ changes.length ? '刷新' : '查看' }}
+              </button>
+            </div>
+            <ChangeLogList :changes="changes" />
           </div>
 
           <div class="d-card">

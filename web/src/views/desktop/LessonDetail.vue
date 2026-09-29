@@ -11,6 +11,7 @@ import { ATTEND_STATUS, cnDate, endTime, fmtDate, LESSON_STATUS, BADGE } from '.
 import { uploadImage } from '../../utils/image';
 import { useBack } from '../../composables/back';
 import RescheduleDialog from '../../components/RescheduleDialog.vue';
+import ChangeLogList from '../../components/ChangeLogList.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -30,6 +31,18 @@ const showReschedule = ref(false);
 const attendMap = reactive({});
 const signMap = reactive({});
 
+/** 这节课的调课 / 停课留痕 */
+const changes = ref([]);
+
+async function loadChanges() {
+  try {
+    const d = await api.get(`/lessons/${lessonId}/changes`);
+    changes.value = d.changes;
+  } catch {
+    /* 留痕拿不到不影响主流程 */
+  }
+}
+
 async function load() {
   loading.value = true;
   try {
@@ -38,6 +51,7 @@ async function load() {
     applyAttendance(d.attendance);
     record.content = d.record?.content || '';
     record.homework = d.record?.homework || '';
+    loadChanges();
   } catch (e) {
     toastError(e);
   } finally {
@@ -478,6 +492,14 @@ function preview(url) {
               </div>
             </div>
           </template>
+
+          <div v-if="auth.canTeach" class="d-card">
+            <div class="d-card-title">
+              <span>调课记录</span>
+              <span class="d-badge mute">{{ changes.length }} 条</span>
+            </div>
+            <ChangeLogList :changes="changes" dense />
+          </div>
         </div>
       </div>
     </template>

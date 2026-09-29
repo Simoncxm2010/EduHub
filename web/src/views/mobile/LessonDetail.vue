@@ -11,6 +11,7 @@ import { uploadImage } from '../../utils/image';
 import SignaturePad from '../../components/SignaturePad.vue';
 import PhotoField from '../../components/PhotoField.vue';
 import RescheduleDialog from '../../components/RescheduleDialog.vue';
+import ChangeLogList from '../../components/ChangeLogList.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -29,12 +30,25 @@ const savingAttend = ref(false);
 const attendMap = reactive({});
 const signMap = reactive({});
 
+/** 这节课的调课 / 停课留痕 */
+const changes = ref([]);
+
+async function loadChanges() {
+  try {
+    const d = await api.get(`/lessons/${lessonId}/changes`);
+    changes.value = d.changes;
+  } catch {
+    /* 留痕拿不到不影响主流程 */
+  }
+}
+
 async function load() {
   loading.value = true;
   try {
     const d = await api.get(`/lessons/${lessonId}`);
     detail.value = d;
     applyAttendance(d.attendance);
+    loadChanges();
     record.content = d.record?.content || '';
     record.homework = d.record?.homework || '';
     recordDirty.value = false;
@@ -366,6 +380,16 @@ function preview(url) {
                   <img class="trace-photo" style="height: 90px" :src="detail.lesson.teacher_signature" alt="教师签名" @click="preview(detail.lesson.teacher_signature)" />
                 </div>
               </div>
+            </div>
+          </template>
+
+          <template v-if="auth.canTeach && changes.length">
+            <div class="section-head">
+              <span>调课记录</span>
+              <span class="muted">{{ changes.length }} 条</span>
+            </div>
+            <div class="card">
+              <ChangeLogList :changes="changes" dense />
             </div>
           </template>
 

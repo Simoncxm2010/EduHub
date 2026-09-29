@@ -8,6 +8,7 @@ import { isDesktop } from '../../composables/layout';
 import { useBack } from '../../composables/back';
 import { addDays, fmtDate } from '../../utils';
 import LessonCard from '../../components/LessonCard.vue';
+import ChangeLogList from '../../components/ChangeLogList.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -20,6 +21,18 @@ const upcoming = ref([]);
 const stats = ref(null);
 const loading = ref(true);
 const exporting = ref(false);
+
+/** 调课 / 停课留痕（按需加载） */
+const changes = ref([]);
+
+async function loadChanges() {
+  try {
+    const d = await api.get('/lessons/changes', { params: { class_id: classId, limit: 30 } });
+    changes.value = d.changes;
+  } catch (e) {
+    toastError(e);
+  }
+}
 
 /* 收费结算（按学生月度统计） */
 const billMonth = ref(fmtDate(new Date()).slice(0, 7));
@@ -216,6 +229,14 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
       </div>
 
       <template v-if="auth.canTeach && stats">
+        <div class="section-head">
+          <span>调课记录</span>
+          <span class="muted link" @click="loadChanges">{{ changes.length ? `${changes.length} 条` : '查看' }}</span>
+        </div>
+        <div class="card">
+          <ChangeLogList :changes="changes" />
+        </div>
+
         <div class="section-head">
           <span>出勤统计</span>
           <span class="muted">按已记录的 {{ stats.total_lessons }} 节课统计</span>
