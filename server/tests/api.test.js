@@ -335,9 +335,10 @@ describe('师枢 EduHub API', () => {
   });
 
   it('智能排课预览：跳过冲突日期且不写库', async () => {
+    // skip_holidays=false：这条用例只关心冲突判定，避免日期范围恰好压到法定假日时结果随「今天」漂移
     const body = {
       class_id: classId, weekdays: [DOW], start_time: '18:30', duration_min: 90,
-      from: today(), to: addDays(today(), 21), dry_run: true,
+      from: today(), to: addDays(today(), 21), dry_run: true, skip_holidays: false,
     };
     const before = await api('GET', `/api/lessons?from=${today()}&to=${addDays(today(), 21)}&class_id=${classId}`, teacherToken);
     const r = await api('POST', '/api/lessons/smart/plan', teacherToken, body);
@@ -354,7 +355,7 @@ describe('师枢 EduHub API', () => {
   it('智能排课执行：只创建不冲突的课时', async () => {
     const r = await api('POST', '/api/lessons/smart/plan', teacherToken, {
       class_id: classId, weekdays: [DOW], start_time: '18:30', duration_min: 90,
-      from: today(), to: addDays(today(), 21), dry_run: false,
+      from: today(), to: addDays(today(), 21), dry_run: false, skip_holidays: false,
     });
     assert.equal(r.status, 201);
     assert.equal(r.data.created.length, 2);
@@ -366,7 +367,7 @@ describe('师枢 EduHub API', () => {
     const r = await api('POST', '/api/lessons/smart/plan', teacherToken, {
       class_id: classId, weekdays: [DOW], start_time: '07:00', duration_min: 60,
       from: addDays(today(), 14), to: addDays(today(), 21),
-      skip_dates: [addDays(today(), 14)], dry_run: true,
+      skip_dates: [addDays(today(), 14)], dry_run: true, skip_holidays: false,
     });
     assert.equal(r.status, 200);
     assert.equal(r.data.summary.skip, 1);
