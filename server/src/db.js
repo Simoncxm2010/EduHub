@@ -91,6 +91,11 @@ CREATE TABLE IF NOT EXISTS lesson_records (
 -- 每周可上课时段：老师表示「能授课」，学生表示「能上课」，用于智能协调时间
 -- user_id 可空：手动登记的学生没有账号，老师代填的时段就挂在 student_id 上
 -- source：self = 本人填写，teacher = 老师代填
+-- 规则维度（都可留空 = 不限制）：
+--   valid_from/valid_to  生效日期范围（闭区间）
+--   week_parity          单双周：all | odd | even
+--   specific_date        只在这一天生效（此时 weekday 由该日期推导，仅作展示）
+--   min_duration/max_duration  这个时段能容纳的单节课时长范围（分钟，0 = 不限）
 CREATE TABLE IF NOT EXISTS availability (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -100,6 +105,12 @@ CREATE TABLE IF NOT EXISTS availability (
   end_time TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL DEFAULT 'self',
+  valid_from TEXT,
+  valid_to TEXT,
+  week_parity TEXT NOT NULL DEFAULT 'all' CHECK(week_parity IN ('all','odd','even')),
+  specific_date TEXT,
+  min_duration INTEGER NOT NULL DEFAULT 0,
+  max_duration INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -169,6 +180,22 @@ CREATE TABLE IF NOT EXISTS holiday_sync (
   source TEXT NOT NULL DEFAULT '',
   fetched_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+
+-- 调课/停课等改动留痕：谁在什么时候把哪节课从什么时间改到了什么时间
+CREATE TABLE IF NOT EXISTS lesson_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lesson_id INTEGER NOT NULL,
+  class_id INTEGER NOT NULL,
+  actor_id INTEGER NOT NULL,
+  actor_name TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,
+  before_json TEXT NOT NULL DEFAULT '{}',
+  after_json TEXT NOT NULL DEFAULT '{}',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_lesson_changes_lesson ON lesson_changes(lesson_id);
+CREATE INDEX IF NOT EXISTS idx_lesson_changes_class ON lesson_changes(class_id, created_at);
 `);
 
 /** 老库补列：SQLite 没有 ADD COLUMN IF NOT EXISTS */
@@ -281,6 +308,16 @@ ensureColumn('users', 'feed_token', 'TEXT');
 // v0.6 起：界面主题（light / dark / system），随账号跨设备保存
 ensureColumn('users', 'theme', "TEXT NOT NULL DEFAULT 'system' CHECK(theme IN ('light','dark','system'))");
 ensureColumn('classes', 'rate', 'REAL NOT NULL DEFAULT 0');
+// v0.7 起：老师两节课之间预留的最短间隔（分钟），用于排课冲突与智能协调
+ensureColumn('users', 'min_gap_min', 'INTEGER NOT NULL DEFAULT 0');
+
+// v0.7 起：可上课时段支持更细的规则（老库补列；新库建表时已带）
+ensureColumn('availability', 'valid_from', 'TEXT');
+ensureColumn('availability', 'valid_to', 'TEXT');
+ensureColumn('availability', 'week_parity', "TEXT NOT NULL DEFAULT 'all'");
+ensureColumn('availability', 'specific_date', 'TEXT');
+ensureColumn('availability', 'min_duration', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('availability', 'max_duration', 'INTEGER NOT NULL DEFAULT 0');
 
 /** 本地时区的今天，格式 YYYY-MM-DD */
 export function today() {

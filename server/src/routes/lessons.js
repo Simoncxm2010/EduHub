@@ -15,6 +15,28 @@ const ATTEND_STATUSES = ['present', 'late', 'absent', 'leave'];
 const SELF_STATUSES = ['present', 'late', 'leave'];
 const STATUS_CN = { scheduled: '待上课', done: '已完成', canceled: '已取消' };
 
+/** 一节课的时间地点，用于调课前后对比与留痕 */
+function pickSlot(l) {
+  return { date: l.date, start_time: l.start_time, duration_min: l.duration_min, room: l.room };
+}
+
+/** 记录一次课时改动（谁、什么时候、从哪挪到哪） */
+function logLessonChange(actor, lesson, action, before, after) {
+  db.prepare(`
+    INSERT INTO lesson_changes (lesson_id, class_id, actor_id, actor_name, action, before_json, after_json, note)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    lesson.id, lesson.class_id, actor.id, actor.name || '', action,
+    JSON.stringify(before || {}), JSON.stringify(after || {}), String(after?.note || '').slice(0, 120)
+  );
+}
+
+/** 解开留痕里的 JSON，前端可直接用 */
+function withParsedSlots(row) {
+  const parse = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
+  return { ...row, before: parse(row.before_json), after: parse(row.after_json) };
+}
+
 /** 只接受本站上传目录下的图片地址，避免把外部链接存进库 */
 function normImage(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -273,6 +295,21 @@ router.get('/export/csv', h(async (req, res) => {
   res.send('\uFEFF' + lines.join('\r\n'));
 }));
 
+/**
+ * 调课记录（班级维度，班级详情页用）。
+ * 必须注册在 /:id 之前：它是单段路径，否则 "changes" 会被 /:id 当成课时 id 捕获。
+ */
+router.get('/changes', h(async (req, res) => {
+  const cls = assertClassAccess(req.user, Number(req.query.class_id));
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+  const rows = db.prepare(`
+    SELECT ch.*, c.name AS class_name FROM lesson_changes ch
+    LEFT JOIN classes c ON c.id = ch.class_id
+    WHERE ch.class_id = ? ORDER BY ch.id DESC LIMIT ?
+  `).all(cls.id, limit);
+  res.json({ changes: rows.map(withParsedSlots) });
+}));
+
 /** 课时详情：名单 + 签到（含留痕） + 课堂记录 */
 router.get('/:id', h(async (req, res) => {
   const lesson = lessonWithClass(req.user, Number(req.params.id));
@@ -307,12 +344,144 @@ router.put('/:id', teacherOnly, h(async (req, res) => {
   if (!isTime(startTime)) throw new ApiError(400, '时间格式不正确');
   const status = b.status !== undefined ? b.status : lesson.status;
   if (!['scheduled', 'done', 'canceled'].includes(status)) throw new ApiError(400, '状态不合法');
+  const room = b.room !== undefined ? String(b.room) : lesson.room;
+  const dur = Math.min(Math.max(Number(duration) || 60, 15), 480);
+
+  // 改时间/教室要走冲突预检：调课请用 /reschedule（它支持先预览再确认）
+  const moved = date !== lesson.date || startTime !== lesson.start_time
+    || dur !== lesson.duration_min || room !== lesson.room;
+  if (moved) {
+    const conflicts = findConflicts(lesson.teacher_id, {
+      class_id: lesson.class_id, date, start_time: startTime, duration_min: dur, room, exclude_id: lesson.id,
+    });
+    if (conflicts.length) {
+      return res.status(409).json({
+        message: '目标时间存在冲突，请改用调课功能确认',
+        conflicts: conflicts.map((c) => ({ type: c.type, text: conflictText(c) })),
+      });
+    }
+  }
+
   db.prepare('UPDATE lessons SET date = ?, start_time = ?, duration_min = ?, room = ?, topic = ?, status = ? WHERE id = ?')
-    .run(date, startTime, Math.min(Math.max(Number(duration) || 60, 15), 480),
-      b.room !== undefined ? String(b.room) : lesson.room,
+    .run(date, startTime, dur, room,
       b.topic !== undefined ? String(b.topic) : lesson.topic,
       status, lesson.id);
+
+  if (moved) {
+    logLessonChange(req.user, lesson, 'edit', {
+      date: lesson.date, start_time: lesson.start_time, duration_min: lesson.duration_min, room: lesson.room,
+    }, { date, start_time: startTime, duration_min: dur, room });
+  } else if (status !== lesson.status) {
+    logLessonChange(req.user, lesson, status === 'canceled' ? 'cancel' : status === 'scheduled' ? 'resume' : 'done',
+      { status: lesson.status }, { status });
+  }
+
   res.json({ lesson: lessonWithClass(req.user, lesson.id) });
+}));
+
+/**
+ * 调课：把一节已排好的课挪到别的时间/教室（教师）。
+ * - dry_run=true 只返回冲突预检结果，便于前端边填边提示
+ * - 有冲突时必须显式传 force=true 才会落库（老师自己的判断优先）
+ */
+router.post('/:id/reschedule', teacherOnly, h(async (req, res) => {
+  const lesson = lessonWithClass(req.user, Number(req.params.id));
+  if (!lesson) throw new ApiError(404, '课时不存在');
+  if (lesson.status === 'canceled') throw new ApiError(400, '已取消的课时不能调课，请先恢复排课');
+
+  const b = req.body || {};
+  const date = b.date !== undefined ? b.date : lesson.date;
+  const startTime = b.start_time !== undefined ? b.start_time : lesson.start_time;
+  const room = b.room !== undefined ? String(b.room) : lesson.room;
+  const dur = Math.min(Math.max(Number(b.duration_min ?? lesson.duration_min) || 60, 15), 480);
+  if (!isDate(date)) throw new ApiError(400, '日期格式不正确');
+  if (!isTime(startTime)) throw new ApiError(400, '时间格式不正确');
+
+  const unchanged = date === lesson.date && startTime === lesson.start_time
+    && dur === lesson.duration_min && room === lesson.room;
+  if (unchanged && b.dry_run !== true) throw new ApiError(400, '时间和教室都没有变化');
+
+  const conflicts = findConflicts(lesson.teacher_id, {
+    class_id: lesson.class_id, date, start_time: startTime, duration_min: dur, room, exclude_id: lesson.id,
+  });
+  const payload = {
+    from: { date: lesson.date, start_time: lesson.start_time, duration_min: lesson.duration_min, room: lesson.room },
+    to: { date, start_time: startTime, duration_min: dur, room },
+    conflicts: conflicts.map((c) => ({ type: c.type, text: conflictText(c), lesson_id: c.lesson.id })),
+  };
+
+  if (b.dry_run === true) return res.json({ dry_run: true, ...payload });
+  if (conflicts.length && b.force !== true) {
+    return res.status(409).json({ message: '目标时间存在冲突', ...payload });
+  }
+
+  db.prepare('UPDATE lessons SET date = ?, start_time = ?, duration_min = ?, room = ? WHERE id = ?')
+    .run(date, startTime, dur, room, lesson.id);
+  logLessonChange(req.user, lesson, 'reschedule', payload.from,
+    { ...payload.to, note: String(b.note || '').slice(0, 120) });
+
+  res.json({ lesson: lessonWithClass(req.user, lesson.id), forced: conflicts.length > 0, ...payload });
+}));
+
+/** 对调两节课的时间与教室（教师）：临时换课最常用 */
+router.post('/:id/swap', teacherOnly, h(async (req, res) => {
+  const a = lessonWithClass(req.user, Number(req.params.id));
+  if (!a) throw new ApiError(404, '课时不存在');
+  const b = lessonWithClass(req.user, Number(req.body?.other_id));
+  if (!b) throw new ApiError(404, '要互换的课时不存在');
+  if (a.id === b.id) throw new ApiError(400, '不能和自己互换');
+  if (a.status === 'canceled' || b.status === 'canceled') throw new ApiError(400, '已取消的课时不能参与对调');
+
+  // 互相占用对方的时段：两边都要检查，且都把这两节排除掉
+  const exclude = [a.id, b.id];
+  const conflictsA = findConflicts(a.teacher_id, {
+    class_id: a.class_id, date: b.date, start_time: b.start_time, duration_min: b.duration_min, room: b.room, exclude_id: exclude,
+  });
+  const conflictsB = findConflicts(b.teacher_id, {
+    class_id: b.class_id, date: a.date, start_time: a.start_time, duration_min: a.duration_min, room: a.room, exclude_id: exclude,
+  });
+  const conflicts = [
+    ...conflictsA.map((c) => ({ type: c.type, text: `${a.class_name} 换到 ${b.date}：${conflictText(c)}`, lesson_id: c.lesson.id })),
+    ...conflictsB.map((c) => ({ type: c.type, text: `${b.class_name} 换到 ${a.date}：${conflictText(c)}`, lesson_id: c.lesson.id })),
+  ];
+  const payload = {
+    a: { id: a.id, class_name: a.class_name, ...pickSlot(a) },
+    b: { id: b.id, class_name: b.class_name, ...pickSlot(b) },
+    conflicts,
+  };
+
+  if (req.body?.dry_run === true) return res.json({ dry_run: true, ...payload });
+  if (conflicts.length && req.body?.force !== true) {
+    return res.status(409).json({ message: '对调后存在冲突', ...payload });
+  }
+
+  const upd = db.prepare('UPDATE lessons SET date = ?, start_time = ?, duration_min = ?, room = ? WHERE id = ?');
+  db.exec('BEGIN');
+  try {
+    upd.run(b.date, b.start_time, b.duration_min, b.room, a.id);
+    upd.run(a.date, a.start_time, a.duration_min, a.room, b.id);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  logLessonChange(req.user, a, 'swap', pickSlot(a), { ...pickSlot(b), with: b.id, with_class: b.class_name });
+  logLessonChange(req.user, b, 'swap', pickSlot(b), { ...pickSlot(a), with: a.id, with_class: a.class_name });
+
+  res.json({
+    a: lessonWithClass(req.user, a.id),
+    b: lessonWithClass(req.user, b.id),
+    forced: conflicts.length > 0,
+    conflicts,
+  });
+}));
+
+/** 单节课的调课记录 */
+router.get('/:id/changes', h(async (req, res) => {
+  const lesson = lessonWithClass(req.user, Number(req.params.id));
+  if (!lesson) throw new ApiError(404, '课时不存在');
+  const rows = db.prepare('SELECT * FROM lesson_changes WHERE lesson_id = ? ORDER BY id DESC LIMIT 50').all(lesson.id);
+  res.json({ changes: rows.map(withParsedSlots) });
 }));
 
 /** 删除课时（教师） */

@@ -1,16 +1,20 @@
 import { Router } from 'express';
 import { db, today } from '../db.js';
 import { authRequired, teacherOnly, assertClassAccess, roleAtLeast } from '../middleware.js';
-import { h, ApiError, isTime, toMin, eachDate, weekdayOf, minToTime } from '../util.js';
+import { h, ApiError, toMin, eachDate, weekdayOf, minToTime } from '../util.js';
 import { recognizeAvailability, llmConfig, normalizeWindows } from '../llm.js';
+import { normalizeRule, appliesOn, allowsDuration } from '../availability-rules.js';
+import { minGapOf } from '../conflicts.js';
 
 const router = Router();
 router.use(authRequired);
 
 const MAX_WINDOWS = 40;
 const SLOT_STEP = 30; // 匹配粒度：半小时
+const MAX_GAP = 240;
 
-const WINDOW_COLS = 'id, weekday, start_time, end_time, note, source';
+const WINDOW_COLS = `id, weekday, start_time, end_time, note, source,
+  valid_from, valid_to, week_parity, specific_date, min_duration, max_duration`;
 
 function listWindows(userId) {
   return db.prepare(
@@ -41,11 +45,9 @@ function cleanWindows(items) {
   if (items.length > MAX_WINDOWS) throw new ApiError(400, `最多设置 ${MAX_WINDOWS} 个时段`);
   const cleaned = [];
   for (const it of items) {
-    const weekday = Number(it?.weekday);
-    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) throw new ApiError(400, '星期不正确');
-    if (!isTime(it?.start_time) || !isTime(it?.end_time)) throw new ApiError(400, '时间格式不正确');
-    if (toMin(it.start_time) >= toMin(it.end_time)) throw new ApiError(400, '开始时间必须早于结束时间');
-    cleaned.push({ weekday, start_time: it.start_time, end_time: it.end_time, note: String(it.note || '').slice(0, 60) });
+    const r = normalizeRule(it);
+    if (r.error) throw new ApiError(400, r.error);
+    cleaned.push(r.rule);
   }
   return cleaned;
 }
@@ -56,10 +58,18 @@ function replaceWindows({ userId = null, studentId = null, source, cleaned }) {
   try {
     if (userId) db.prepare('DELETE FROM availability WHERE user_id = ?').run(userId);
     if (studentId) db.prepare('DELETE FROM availability WHERE student_id = ?').run(studentId);
-    const ins = db.prepare(
-      'INSERT INTO availability (user_id, student_id, weekday, start_time, end_time, note, source) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    );
-    for (const c of cleaned) ins.run(userId, studentId, c.weekday, c.start_time, c.end_time, c.note, source);
+    const ins = db.prepare(`
+      INSERT INTO availability
+        (user_id, student_id, weekday, start_time, end_time, note, source,
+         valid_from, valid_to, week_parity, specific_date, min_duration, max_duration)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const c of cleaned) {
+      ins.run(
+        userId, studentId, c.weekday, c.start_time, c.end_time, c.note, source,
+        c.valid_from, c.valid_to, c.week_parity, c.specific_date, c.min_duration, c.max_duration
+      );
+    }
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
@@ -88,7 +98,19 @@ router.get('/', h(async (req, res) => {
            `).get(targetId, req.user.id));
     if (!allowed) throw new ApiError(403, '无权查看该用户的时段');
   }
-  res.json({ windows: listWindows(targetId), user_id: targetId });
+  res.json({ windows: listWindows(targetId), user_id: targetId, min_gap_min: minGapOf(targetId) });
+}));
+
+/** 两节课之间预留的最短间隔（老师，用于冲突检测与智能协调） */
+router.get('/settings', h(async (req, res) => {
+  res.json({ min_gap_min: minGapOf(req.user.id) });
+}));
+
+router.put('/settings', teacherOnly, h(async (req, res) => {
+  const n = Number(req.body?.min_gap_min);
+  if (!Number.isInteger(n) || n < 0 || n > MAX_GAP) throw new ApiError(400, `最短间隔需在 0–${MAX_GAP} 分钟之间`);
+  db.prepare('UPDATE users SET min_gap_min = ? WHERE id = ?').run(n, req.user.id);
+  res.json({ min_gap_min: n });
 }));
 
 /** 覆盖式保存我的时段 */
@@ -197,6 +219,8 @@ router.get('/match', h(async (req, res) => {
 
   // 老师自己的可授课时段（勾选了忽略时按全天 08:00-22:00 处理）
   const teacherId = cls.teacher_id;
+  // 老师两节课之间要留的间隔：排课时同样不能让两节挨太近
+  const teacherGap = minGapOf(teacherId);
   const teacherWindows = ignoreTeacherAvailability
     ? [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_time: '08:00', end_time: '22:00' }))
     : listWindows(teacherId);
@@ -231,17 +255,23 @@ router.get('/match', h(async (req, res) => {
     const weekday = weekdayOf(date);
     const dayBusy = busyByDate.get(date) || [];
 
-    // 老师这一天的可用区间
-    const windows = teacherWindows.filter((w) => w.weekday === weekday);
+    // 老师这一天的可用区间：日期范围 / 单双周 / 具体某天 / 时长上限都要满足
+    const windows = teacherWindows.filter((w) => appliesOn(w, date) && allowsDuration(w, duration));
     if (!windows.length) continue;
 
     for (const w of windows) {
       for (const start of slotStarts(toMin(w.start_time), toMin(w.end_time), duration)) {
         const end = start + duration;
 
-        // 与已有排课冲突（本班或同教室）就跳过
-        const clash = dayBusy.some((b) =>
-          b.start < end && start < b.end && (b.class_id === cls.id || (room && b.room && b.room === room)));
+        // 与已有排课冲突（本班 / 同教室 / 间隔不足）就跳过
+        const clash = dayBusy.some((b) => {
+          if (b.start < end && start < b.end) {
+            return b.class_id === cls.id || (room && b.room && b.room === room);
+          }
+          if (teacherGap <= 0) return false;
+          const distance = b.start >= end ? b.start - end : start - b.end;
+          return distance < teacherGap;
+        });
         if (clash) continue;
 
         // 统计这个时段有多少学生有空
@@ -250,7 +280,11 @@ router.get('/match', h(async (req, res) => {
         const busyNames = [];
         for (const s of students) {
           const wins = studentWindows.get(s.id) || [];
-          const free = wins.some((x) => x.weekday === weekday && toMin(x.start_time) <= start && toMin(x.end_time) >= end);
+          const free = wins.some((x) =>
+            appliesOn(x, date)
+            && allowsDuration(x, duration)
+            && toMin(x.start_time) <= start
+            && toMin(x.end_time) >= end);
           if (free) { freeCount++; freeNames.push(s.name); } else busyNames.push(s.name);
         }
 

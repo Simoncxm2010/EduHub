@@ -60,6 +60,21 @@ export function weekdayOf(dateStr) {
   return new Date(`${dateStr}T00:00:00`).getDay();
 }
 
+/**
+ * ISO 8601 周序号（用于「单周 / 双周」判断）。
+ * 以所在周的周四决定属于哪一年，跨年周也能算对。
+ */
+export function isoWeek(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  const target = new Date(d.getTime());
+  const dayNr = (d.getDay() + 6) % 7; // 周一 = 0
+  target.setDate(target.getDate() - dayNr + 3); // 这一周的周四
+  const firstThursday = new Date(target.getFullYear(), 0, 4);
+  const firstDayNr = (firstThursday.getDay() + 6) % 7;
+  firstThursday.setDate(firstThursday.getDate() - firstDayNr + 3);
+  return 1 + Math.round((target.getTime() - firstThursday.getTime()) / (7 * 86400000));
+}
+
 /** 闭区间内的每一天（带安全上限，避免误传超大区间） */
 export function eachDate(from, to) {
   const out = [];
