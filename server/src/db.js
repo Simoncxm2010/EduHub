@@ -89,13 +89,17 @@ CREATE TABLE IF NOT EXISTS lesson_records (
 );
 
 -- 每周可上课时段：老师表示「能授课」，学生表示「能上课」，用于智能协调时间
+-- user_id 可空：手动登记的学生没有账号，老师代填的时段就挂在 student_id 上
+-- source：self = 本人填写，teacher = 老师代填
 CREATE TABLE IF NOT EXISTS availability (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
   weekday INTEGER NOT NULL CHECK(weekday BETWEEN 0 AND 6),
   start_time TEXT NOT NULL,
   end_time TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'self',
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -218,6 +222,50 @@ function migrateUserRoles() {
   }
 }
 migrateUserRoles();
+
+/**
+ * availability 原本 user_id NOT NULL，手动登记的学生（没有账号）根本存不了时段。
+ * SQLite 去不掉 NOT NULL，只能按官方流程重建表，顺带补上 student_id / source。
+ */
+function migrateAvailability() {
+  const cols = db.prepare('PRAGMA table_info(availability)').all().map((c) => c.name);
+  if (!cols.length || cols.includes('student_id')) return; // 新库或已迁移
+
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec('BEGIN');
+  try {
+    db.exec(`
+      CREATE TABLE availability_migrated (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+        weekday INTEGER NOT NULL CHECK(weekday BETWEEN 0 AND 6),
+        start_time TEXT NOT NULL,
+        end_time TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'self',
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      )
+    `);
+    db.exec(`INSERT INTO availability_migrated (id, user_id, weekday, start_time, end_time, note, created_at)
+             SELECT id, user_id, weekday, start_time, end_time, note, created_at FROM availability`);
+    db.exec('DROP TABLE availability');
+    db.exec('ALTER TABLE availability_migrated RENAME TO availability');
+    // 索引随表一起被删掉了，重建
+    db.exec('CREATE INDEX IF NOT EXISTS idx_availability_user ON availability(user_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_availability_student ON availability(student_id)');
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+migrateAvailability();
+// student_id 索引必须等迁移补上这一列之后再建：老库在迁移前没有这列，
+// 放在上面的建表语句里会让服务启动直接报 "no such column: student_id"
+db.exec('CREATE INDEX IF NOT EXISTS idx_availability_student ON availability(student_id)');
 
 // v0.2 起：签到留痕（课堂照片 / 签名）
 ensureColumn('lessons', 'checkin_photo', 'TEXT');

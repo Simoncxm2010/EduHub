@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db, today } from '../db.js';
 import { authRequired, teacherOnly, assertClassAccess, roleAtLeast } from '../middleware.js';
 import { h, ApiError, isTime, toMin, eachDate, weekdayOf, minToTime } from '../util.js';
+import { recognizeAvailability, llmConfig, normalizeWindows } from '../llm.js';
 
 const router = Router();
 router.use(authRequired);
@@ -9,10 +10,69 @@ router.use(authRequired);
 const MAX_WINDOWS = 40;
 const SLOT_STEP = 30; // 匹配粒度：半小时
 
+const WINDOW_COLS = 'id, weekday, start_time, end_time, note, source';
+
 function listWindows(userId) {
   return db.prepare(
-    'SELECT id, weekday, start_time, end_time, note FROM availability WHERE user_id = ? ORDER BY weekday, start_time'
+    `SELECT ${WINDOW_COLS} FROM availability WHERE user_id = ? ORDER BY weekday, start_time`
   ).all(userId);
+}
+
+function listStudentWindows(studentId) {
+  return db.prepare(
+    `SELECT ${WINDOW_COLS} FROM availability WHERE student_id = ? ORDER BY weekday, start_time`
+  ).all(studentId);
+}
+
+/**
+ * 某个学生记录的有效时段。
+ * - 没有账号的学生：只能由老师代填，挂在 student_id 上
+ * - 有账号的学生：优先用他自己填的；他还没填过时，沿用注册前老师代填的那份
+ */
+function windowsOfStudent(student) {
+  if (!student.user_id) return listStudentWindows(student.id);
+  const own = listWindows(student.user_id);
+  return own.length ? own : listStudentWindows(student.id);
+}
+
+/** 校验并规范化请求里的时段数组 */
+function cleanWindows(items) {
+  if (!Array.isArray(items)) throw new ApiError(400, 'windows 必须是数组');
+  if (items.length > MAX_WINDOWS) throw new ApiError(400, `最多设置 ${MAX_WINDOWS} 个时段`);
+  const cleaned = [];
+  for (const it of items) {
+    const weekday = Number(it?.weekday);
+    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) throw new ApiError(400, '星期不正确');
+    if (!isTime(it?.start_time) || !isTime(it?.end_time)) throw new ApiError(400, '时间格式不正确');
+    if (toMin(it.start_time) >= toMin(it.end_time)) throw new ApiError(400, '开始时间必须早于结束时间');
+    cleaned.push({ weekday, start_time: it.start_time, end_time: it.end_time, note: String(it.note || '').slice(0, 60) });
+  }
+  return cleaned;
+}
+
+/** 覆盖式写入某一组时段（要么挂 user_id，要么挂 student_id） */
+function replaceWindows({ userId = null, studentId = null, source, cleaned }) {
+  db.exec('BEGIN');
+  try {
+    if (userId) db.prepare('DELETE FROM availability WHERE user_id = ?').run(userId);
+    if (studentId) db.prepare('DELETE FROM availability WHERE student_id = ?').run(studentId);
+    const ins = db.prepare(
+      'INSERT INTO availability (user_id, student_id, weekday, start_time, end_time, note, source) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    );
+    for (const c of cleaned) ins.run(userId, studentId, c.weekday, c.start_time, c.end_time, c.note, source);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+/** 学生必须属于当前老师（或管理员）能管的班级 */
+function assertStudentAccess(user, studentId) {
+  const student = db.prepare('SELECT * FROM students WHERE id = ?').get(Number(studentId));
+  if (!student) throw new ApiError(404, '学生不存在');
+  assertClassAccess(user, student.class_id);
+  return student;
 }
 
 /** 我的可上课 / 可授课时段 */
@@ -33,32 +93,12 @@ router.get('/', h(async (req, res) => {
 
 /** 覆盖式保存我的时段 */
 router.put('/', h(async (req, res) => {
-  const items = Array.isArray(req.body?.windows) ? req.body.windows : [];
-  if (items.length > MAX_WINDOWS) throw new ApiError(400, `最多设置 ${MAX_WINDOWS} 个时段`);
-
-  const cleaned = [];
-  for (const it of items) {
-    const weekday = Number(it?.weekday);
-    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) throw new ApiError(400, '星期不正确');
-    if (!isTime(it?.start_time) || !isTime(it?.end_time)) throw new ApiError(400, '时间格式不正确');
-    if (toMin(it.start_time) >= toMin(it.end_time)) throw new ApiError(400, '开始时间必须早于结束时间');
-    cleaned.push({ weekday, start_time: it.start_time, end_time: it.end_time, note: String(it.note || '').slice(0, 60) });
-  }
-
-  db.exec('BEGIN');
-  try {
-    db.prepare('DELETE FROM availability WHERE user_id = ?').run(req.user.id);
-    const ins = db.prepare(
-      'INSERT INTO availability (user_id, weekday, start_time, end_time, note) VALUES (?, ?, ?, ?, ?)'
-    );
-    for (const c of cleaned) ins.run(req.user.id, c.weekday, c.start_time, c.end_time, c.note);
-    db.exec('COMMIT');
-  } catch (e) {
-    db.exec('ROLLBACK');
-    throw e;
-  }
+  const cleaned = cleanWindows(req.body?.windows);
+  replaceWindows({ userId: req.user.id, source: 'self', cleaned });
   res.json({ windows: listWindows(req.user.id) });
 }));
+
+/* ---------------- 老师代学生填写时段 ---------------- */
 
 /** 某班学生的时段概览（教师在协调时间时参考） */
 router.get('/class/:id', teacherOnly, h(async (req, res) => {
@@ -66,13 +106,70 @@ router.get('/class/:id', teacherOnly, h(async (req, res) => {
   const students = db.prepare(
     'SELECT id, name, user_id FROM students WHERE class_id = ? ORDER BY created_at, id'
   ).all(cls.id);
-  const out = students.map((s) => ({
-    student_id: s.id,
-    name: s.name,
-    windows: s.user_id ? listWindows(s.user_id) : [],
-  }));
+  const out = students.map((s) => {
+    const windows = windowsOfStudent(s);
+    return {
+      student_id: s.id,
+      name: s.name,
+      has_account: !!s.user_id,
+      // 学生自己填过没有：全是他填的就是 self，老师代填的是 teacher
+      filled_by_self: windows.some((w) => w.source === 'self'),
+      windows,
+    };
+  });
   res.json({ students: out });
 }));
+
+/** 单个学生的时段（老师打开编辑器时读） */
+router.get('/student/:studentId', teacherOnly, h(async (req, res) => {
+  const student = assertStudentAccess(req.user, req.params.studentId);
+  res.json({
+    student: { id: student.id, name: student.name, class_id: student.class_id, has_account: !!student.user_id },
+    windows: windowsOfStudent(student),
+  });
+}));
+
+/**
+ * 老师替学生保存时段（覆盖式）。
+ * 学生有账号时写进他自己的时段表，他登录后就能看到并自行调整；
+ * 没有账号（手动登记的学生）就挂在 student_id 上 —— 这类学生以前根本填不了时段。
+ */
+router.put('/student/:studentId', teacherOnly, h(async (req, res) => {
+  const student = assertStudentAccess(req.user, req.params.studentId);
+  const cleaned = cleanWindows(req.body?.windows);
+  if (student.user_id) replaceWindows({ userId: student.user_id, studentId: student.id, source: 'teacher', cleaned });
+  else replaceWindows({ studentId: student.id, source: 'teacher', cleaned });
+  res.json({
+    student: { id: student.id, name: student.name, has_account: !!student.user_id },
+    windows: windowsOfStudent(student),
+  });
+}));
+
+/**
+ * 大模型识别接口（预留）：把自然语言描述或聊天截图转成时段建议。
+ * 只返回建议、不落库，老师确认后再调 PUT /student/:id 保存。
+ */
+router.post('/recognize', teacherOnly, h(async (req, res) => {
+  const text = String(req.body?.text || '').trim().slice(0, 2000);
+  const rawImage = typeof req.body?.image === 'string' ? req.body.image : '';
+  if (!text && !rawImage) throw new ApiError(400, '请提供文字描述或图片');
+  if (rawImage && !/^data:image\/(png|jpe?g|webp);base64,/.test(rawImage)) {
+    throw new ApiError(400, '图片格式不支持，请使用 PNG / JPG / WebP');
+  }
+
+  const result = await recognizeAvailability({ text, image: rawImage });
+  const { configured, model, vision } = llmConfig();
+  res.json({
+    // 再兜一层校验：任何通道的结果都必须合法
+    windows: normalizeWindows(result.windows),
+    provider: result.provider,
+    warnings: result.warnings,
+    raw: result.raw,
+    llm: { configured, model: configured ? model : null, vision },
+  });
+}));
+
+/* ---------------- 智能协调时间 ---------------- */
 
 /** 把「分钟区间」按半小时粒度展开成若干起始分钟 */
 function slotStarts(fromMin, toMinute, duration) {
@@ -106,9 +203,7 @@ router.get('/match', h(async (req, res) => {
   const students = db.prepare(
     'SELECT id, name, user_id FROM students WHERE class_id = ? ORDER BY created_at, id'
   ).all(cls.id);
-  const studentWindows = new Map(
-    students.map((s) => [s.id, s.user_id ? listWindows(s.user_id) : []])
-  );
+  const studentWindows = new Map(students.map((s) => [s.id, windowsOfStudent(s)]));
 
   const isTeacherView = req.user.role === 'teacher' ? cls.teacher_id === req.user.id : roleAtLeast(req.user, 'admin');
   // 学生视角只看自己那份时段

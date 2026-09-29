@@ -24,6 +24,8 @@ export function createApp() {
   app.set('trust proxy', 1);
   // 图片上传单独放宽 body 上限，其余接口维持 1mb
   app.use('/api/uploads', express.json({ limit: '12mb' }));
+  // 时段识别可能带聊天截图（data URL），单独放宽
+  app.use('/api/availability/recognize', express.json({ limit: '8mb' }));
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', (req, res) => {
