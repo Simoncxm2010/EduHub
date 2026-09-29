@@ -4,8 +4,10 @@ import { useRouter } from 'vue-router';
 import { showConfirmDialog, showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
+import { useBack } from '../../composables/back';
 
 const router = useRouter();
+const back = useBack('/');
 const auth = useAuthStore();
 const list = ref([]);
 const loading = ref(true);
@@ -63,7 +65,7 @@ async function clearAll() {
 
 <template>
   <div class="page">
-    <van-nav-bar title="通知" left-arrow @click-left="router.back()">
+    <van-nav-bar title="通知" left-arrow @click-left="back()">
       <template #right>
         <span v-if="list.length" style="color: var(--van-primary-color)" @click="readAll">全部已读</span>
       </template>

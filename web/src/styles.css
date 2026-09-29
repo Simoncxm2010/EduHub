@@ -374,6 +374,23 @@ body {
 .page-head .sub { margin-top: 6px; color: var(--eduhub-muted); font-size: 13px; }
 .page-head-actions { display: flex; gap: 10px; align-items: center; }
 
+/* 次级页面（班级详情 / 课时详情）的返回入口：桌面端只有侧边栏，
+   从列表点进来后没有「退回上一级」的落点 */
+.d-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--eduhub-muted);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.d-back:hover { color: var(--van-primary-color); }
+
 /* ============ 桌面端 ============ */
 .shell-desktop { display: flex; align-items: stretch; min-height: 100vh; }
 .shell-desktop .shell-main { flex: 1; min-width: 0; }
@@ -742,7 +759,7 @@ body {
 .mg-cell.out { background: var(--eduhub-card-2); }
 .mg-cell.out .mg-num { color: var(--eduhub-muted); }
 .mg-cell:hover { background: var(--eduhub-tint); }
-.mg-cell.today .mg-num span { background: var(--van-primary-color); color: #fff; border-radius: 7px; }
+.mg-cell.today .mg-day { background: var(--van-primary-color); color: #fff; border-radius: 7px; }
 .mg-cell.sel { background: var(--eduhub-tint-2); }
 .mg-num {
   font-size: 13px;
@@ -776,6 +793,8 @@ body {
 .mg-more { font-size: 11px; color: var(--eduhub-muted); padding-left: 4px; }
 
 .mg-compact .mg-cell { min-height: 54px; padding: 5px; border-radius: 0; }
+/* 手机端格子窄：收紧首行内边距，避免「日期 + 数量」撑破格子 */
+.mg-compact .mg-num span { padding: 1px 3px; }
 .mg-count {
   font-size: 10px !important;
   color: var(--van-primary-color) !important;
@@ -783,7 +802,7 @@ body {
   border-radius: 6px;
   font-weight: 600;
 }
-.mg-dots { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+.mg-dots { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin-top: 3px; }
 .mg-dot { width: 6px; height: 6px; border-radius: 50%; }
 
 /* ============ 周日历：悬停提示 / 当前时间线 ============ */
@@ -1117,6 +1136,11 @@ html.dark .day .dow { color: var(--eduhub-muted); }
 html.dark .day .num { color: var(--eduhub-text); }
 html.dark .day.today .num { color: var(--van-primary-color); }
 html.dark .day .dot { background: var(--van-primary-color); }
+/* 选中态必须盖过上面这几条暗色规则：它们多一个 html 选择器，特异性更高。
+   否则「今天」被选中时是蓝底蓝字，日期数字直接看不见。 */
+html.dark .day.sel .dow,
+html.dark .day.sel .num { color: #fff; }
+html.dark .day.sel .dot { background: var(--eduhub-card); }
 html.dark .auth-form-inner .sub { color: var(--eduhub-muted); }
 html.dark .auth-page { background: var(--eduhub-bg); }
 html.dark .notif-row.unread { background: var(--eduhub-tint-2); }
@@ -1220,14 +1244,14 @@ html.dark .theme-seg button.on { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45); }
 .mg-cell.holiday:not(.sel) { background: rgba(245, 108, 108, 0.04); }
 .mg-cell.workday:not(.sel) { background: rgba(22, 119, 255, 0.035); }
 
-/* 手机周条：休/班 小徽标 */
+/* 手机周条：休/班 小徽标（贴右上角，别压到居中的星期文字） */
 .day-hol {
   position: absolute;
-  top: 2px;
-  right: 3px;
+  top: 1px;
+  right: 1px;
   font-size: 9px;
   line-height: 1;
-  padding: 1px 3px;
+  padding: 1px 2px;
   border-radius: 4px;
 }
 .day-hol.holiday { background: #ffecec; color: #d03050; }

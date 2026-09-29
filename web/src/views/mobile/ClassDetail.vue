@@ -5,11 +5,13 @@ import { showConfirmDialog, showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import { isDesktop } from '../../composables/layout';
+import { useBack } from '../../composables/back';
 import { addDays, fmtDate } from '../../utils';
 import LessonCard from '../../components/LessonCard.vue';
 
 const route = useRoute();
 const router = useRouter();
+const back = useBack('/classes');
 const auth = useAuthStore();
 const classId = Number(route.params.id);
 
@@ -151,7 +153,7 @@ const subjectTag = computed(() => info.value?.class?.subject || '课程');
 
 <template>
   <div class="page">
-    <van-nav-bar title="班级详情" left-arrow @click-left="router.back()" />
+    <van-nav-bar title="班级详情" left-arrow @click-left="back()" />
 
     <van-loading v-if="loading" style="margin: 30px auto" vertical>加载中…</van-loading>
     <template v-else-if="info">

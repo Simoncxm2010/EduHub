@@ -1,12 +1,14 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { useBack } from '../../composables/back';
 import { showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import { addDays, cnDate, fmtDate, WEEKDAY_SHORT } from '../../utils';
 
 const router = useRouter();
+const back = useBack('/me');
 const auth = useAuthStore();
 const todayStr = fmtDate(new Date());
 const DOW = [1, 2, 3, 4, 5, 6, 0];
@@ -136,7 +138,7 @@ async function submitBook() {
 
 <template>
   <div class="page">
-    <van-nav-bar title="可上课时段" left-arrow @click-left="router.back()" />
+    <van-nav-bar title="可上课时段" left-arrow @click-left="back()" />
 
     <div class="card">
       <div style="display: flex; align-items: center; justify-content: space-between">

@@ -15,6 +15,12 @@ function holidayOf(date) {
   return props.holidayMap?.[date] ?? null;
 }
 
+/** 节假日徽标文字：放假「休」、调休补班「班」 */
+function holChar(date) {
+  const h = holidayOf(date);
+  return h ? (h.type === 'workday' ? '班' : '休') : '';
+}
+
 function cellTitle(cell) {
   const h = holidayOf(cell.date);
   if (!h) return undefined;
@@ -44,12 +50,13 @@ function cellTitle(cell) {
         @click="emit('select-day', cell.date)"
       >
         <div class="mg-num">
-          <span>{{ cell.day }}</span>
+          <span class="mg-day">{{ cell.day }}</span>
+          <!-- 桌面端格子宽裕，徽标跟在日期后面 -->
           <span
-            v-if="holidayOf(cell.date)"
+            v-if="!compact && holidayOf(cell.date)"
             class="mg-hol"
             :class="holidayOf(cell.date).type"
-          >{{ holidayOf(cell.date).type === 'workday' ? '班' : '休' }}</span>
+          >{{ holChar(cell.date) }}</span>
           <span v-if="compact && cell.lessons.length" class="mg-count">{{ cell.lessons.length }}</span>
         </div>
 
@@ -72,7 +79,13 @@ function cellTitle(cell) {
         </template>
 
         <template v-else>
+          <!-- 手机端每格只有约 38px，徽标放到第二行与课程圆点并排，否则首行会横向溢出 -->
           <div class="mg-dots">
+            <span
+              v-if="holidayOf(cell.date)"
+              class="mg-hol"
+              :class="holidayOf(cell.date).type"
+            >{{ holChar(cell.date) }}</span>
             <span
               v-for="l in cell.lessons.slice(0, 3)"
               :key="l.id"

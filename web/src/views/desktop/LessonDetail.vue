@@ -9,9 +9,11 @@ import SignaturePad from '../../components/SignaturePad.vue';
 import PhotoField from '../../components/PhotoField.vue';
 import { ATTEND_STATUS, cnDate, endTime, fmtDate, LESSON_STATUS, BADGE } from '../../utils';
 import { uploadImage } from '../../utils/image';
+import { useBack } from '../../composables/back';
 
 const route = useRoute();
 const router = useRouter();
+const back = useBack('/schedule');
 const auth = useAuthStore();
 const lessonId = Number(route.params.id);
 
@@ -256,6 +258,9 @@ function preview(url) {
     <template v-else-if="detail">
       <div class="d-head">
         <div>
+          <button class="d-back" @click="back()">
+            <van-icon name="arrow-left" /> 返回课表
+          </button>
           <h1>
             <span class="d-dot" :style="{ background: detail.lesson.class_color, width: '12px', height: '12px', marginRight: '10px' }" />
             {{ detail.lesson.class_name }}

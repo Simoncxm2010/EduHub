@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { useBack } from '../../composables/back';
 import { showConfirmDialog, showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
@@ -9,6 +10,7 @@ import { cnDate } from '../../utils';
 import { ensureHolidays, holidaySyncInfo } from '../../utils/holidays';
 
 const router = useRouter();
+const back = useBack('/me');
 const auth = useAuthStore();
 const tab = ref('users');
 const stats = ref(null);
@@ -223,7 +225,7 @@ async function removeUser() {
 
 <template>
   <div class="page">
-    <van-nav-bar title="管理后台" left-arrow @click-left="router.back()" />
+    <van-nav-bar title="管理后台" left-arrow @click-left="back()" />
 
     <div v-if="stats" class="card stats">
       <div style="display: flex; text-align: center">

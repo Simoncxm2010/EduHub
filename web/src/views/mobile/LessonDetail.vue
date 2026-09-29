@@ -5,6 +5,7 @@ import { showConfirmDialog, showImagePreview, showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import { isDesktop } from '../../composables/layout';
+import { useBack } from '../../composables/back';
 import { ATTEND_STATUS, cnDate, endTime, fmtDate, LESSON_STATUS } from '../../utils';
 import { uploadImage } from '../../utils/image';
 import SignaturePad from '../../components/SignaturePad.vue';
@@ -12,6 +13,7 @@ import PhotoField from '../../components/PhotoField.vue';
 
 const route = useRoute();
 const router = useRouter();
+const back = useBack('/schedule');
 const auth = useAuthStore();
 const lessonId = Number(route.params.id);
 
@@ -271,7 +273,7 @@ function preview(url) {
 
 <template>
   <div class="page page-plain">
-    <van-nav-bar title="课时详情" left-arrow @click-left="router.back()" />
+    <van-nav-bar title="课时详情" left-arrow @click-left="back()" />
 
     <van-loading v-if="loading" style="margin: 30px auto" vertical>加载中…</van-loading>
 

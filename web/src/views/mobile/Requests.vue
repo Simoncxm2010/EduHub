@@ -5,8 +5,10 @@ import { showToast } from 'vant';
 import api, { toastError } from '../../api';
 import { useAuthStore } from '../../store';
 import { cnDate, REQUEST_KIND, REQUEST_STATUS } from '../../utils';
+import { useBack } from '../../composables/back';
 
 const router = useRouter();
+const back = useBack('/me');
 const auth = useAuthStore();
 const list = ref([]);
 const pendingCount = ref(0);
@@ -74,7 +76,7 @@ async function cancelMine(row) {
 
 <template>
   <div class="page">
-    <van-nav-bar title="请假与预约" left-arrow @click-left="router.back()" />
+    <van-nav-bar title="请假与预约" left-arrow @click-left="back()" />
 
     <van-tabs v-model:active="tab" @change="load">
       <van-tab title="待处理" name="pending" />

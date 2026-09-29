@@ -7,9 +7,11 @@ import { useAuthStore } from '../../store';
 import Modal from '../../ui/Modal.vue';
 import PhotoField from '../../components/PhotoField.vue';
 import { addDays, endTime, fmtDate, LESSON_STATUS, BADGE } from '../../utils';
+import { useBack } from '../../composables/back';
 
 const route = useRoute();
 const router = useRouter();
+const back = useBack('/classes');
 const auth = useAuthStore();
 const classId = Number(route.params.id);
 const todayStr = fmtDate(new Date());
@@ -211,6 +213,9 @@ function statusOf(l) {
     <template v-else-if="info">
       <div class="d-head">
         <div>
+          <button class="d-back" @click="back()">
+            <van-icon name="arrow-left" /> 返回班级列表
+          </button>
           <h1>
             <span class="d-dot" :style="{ background: info.class.color, width: '12px', height: '12px', marginRight: '10px' }" />
             {{ info.class.name }}

@@ -5,9 +5,11 @@ import { showToast } from 'vant';
 import api from '../../api';
 import { useAuthStore } from '../../store';
 import { isDesktop } from '../../composables/layout';
+import { useBack } from '../../composables/back';
 
 const router = useRouter();
 const route = useRoute();
+const back = useBack('/login');
 const auth = useAuthStore();
 
 const name = ref('');
@@ -71,7 +73,7 @@ async function submit() {
     <section :class="isDesktop ? 'auth-form' : 'page-plain auth-page'">
       <div :class="isDesktop ? 'auth-form-inner' : ''">
         <template v-if="!isDesktop">
-          <van-nav-bar title="注册账号" left-arrow @click-left="router.back()" />
+          <van-nav-bar title="注册账号" left-arrow @click-left="back()" />
         </template>
         <template v-else>
           <h2>注册账号</h2>
