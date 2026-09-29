@@ -5,6 +5,7 @@ import {
   h, ApiError, isDate, isTime, addDays, nowStamp, toMin, minToTime, weekdayOf, eachDate, csvCell,
 } from '../util.js';
 import { findConflicts, conflictText } from '../conflicts.js';
+import { getHoliday, isHoliday, holidayLabel } from '../holidays.js';
 
 const router = Router();
 router.use(authRequired);
@@ -141,8 +142,13 @@ router.get('/smart/suggest', teacherOnly, h(async (req, res) => {
 
 /**
  * 智能排课：按「每周哪几天 + 时间 + 日期范围」批量生成课时，
- * 自动跳过与已有课程冲突或老师手动排除的日期。
+ * 自动跳过法定节假日、与已有课程冲突或老师手动排除的日期。
  * dry_run 为真时只返回计划，不写库（用于预览）。
+ *
+ * 参数：
+ * - skip_holidays：默认 true，法定放假日不排课（调休补班日照常排，那天本来要上课）；
+ * - include_dates：手动恢复某些日期（可覆盖节假日跳过）；
+ * - skip_dates   ：手动排除某些日期。
  */
 router.post('/smart/plan', teacherOnly, h(async (req, res) => {
   const b = req.body || {};
@@ -161,27 +167,45 @@ router.post('/smart/plan', teacherOnly, h(async (req, res) => {
   const room = String(b.room || '');
   const topic = String(b.topic || '');
   const skipDates = new Set(Array.isArray(b.skip_dates) ? b.skip_dates.filter(isDate) : []);
+  const includeDates = new Set(Array.isArray(b.include_dates) ? b.include_dates.filter(isDate) : []);
+  const skipHolidays = b.skip_holidays !== false;
 
   const dates = eachDate(from, to).filter((d) => weekdays.includes(weekdayOf(d)));
   if (dates.length > 200) throw new ApiError(400, '一次最多生成 200 节课，请缩短日期范围');
 
   const plan = dates.map((date) => {
-    if (skipDates.has(date)) return { date, status: 'skip', reason: '已手动排除' };
+    const info = getHoliday(date);
+    const holiday = info ? { name: info.name, type: info.type } : null;
+    const excluded = skipDates.has(date);
+    const included = includeDates.has(date);
+    const base = { date, holiday, excluded, included };
+
+    if (excluded) return { ...base, status: 'skip', reason: '已手动排除' };
+    if (holiday?.type === 'holiday' && skipHolidays && !included) {
+      return { ...base, status: 'skip', reason: `法定节假日：${holiday.name}`, holiday_skip: true };
+    }
     const conflicts = findConflicts(req.user.id, {
       class_id: cls.id, date, start_time: b.start_time, duration_min: duration, room,
     });
-    if (conflicts.length) return { date, status: 'conflict', reason: conflictText(conflicts[0]) };
-    return { date, status: 'ok', reason: '' };
+    if (conflicts.length) return { ...base, status: 'conflict', reason: conflictText(conflicts[0]) };
+    return { ...base, status: 'ok', reason: included ? '已手动恢复排课' : '' };
   });
 
   const summary = {
     total: plan.length,
     ok: plan.filter((p) => p.status === 'ok').length,
     conflict: plan.filter((p) => p.status === 'conflict').length,
+    holiday: plan.filter((p) => p.holiday_skip).length,
     skip: plan.filter((p) => p.status === 'skip').length,
   };
 
-  if (b.dry_run !== false) return res.json({ plan, summary, settings: { from, to, start_time: b.start_time, duration_min: duration, room, topic, weekdays } });
+  if (b.dry_run !== false) {
+    return res.json({
+      plan,
+      summary,
+      settings: { from, to, start_time: b.start_time, duration_min: duration, room, topic, weekdays, skip_holidays: skipHolidays },
+    });
+  }
 
   const insert = db.prepare('INSERT INTO lessons (class_id, date, start_time, duration_min, room, topic) VALUES (?, ?, ?, ?, ?, ?)');
   const createdIds = [];
@@ -475,6 +499,8 @@ router.get('/dashboard/overview', h(async (req, res) => {
 /**
  * 批量改课时状态（教师）：放假 / 复课这类整段操作，
  * 比一节节点「取消课时」实用得多。
+ * 传 only_holidays=true 时只处理落在**法定放假日**上的课时，
+ * 用来一键按节假日停课（调休补班日不在此列，那天正常上课）。
  */
 router.post('/bulk-status', teacherOnly, h(async (req, res) => {
   const b = req.body || {};
@@ -483,11 +509,13 @@ router.post('/bulk-status', teacherOnly, h(async (req, res) => {
   if (!isDate(from) || !isDate(to)) throw new ApiError(400, '请选择日期范围');
   if (to < from) throw new ApiError(400, '结束日期不能早于开始日期');
   if (!['scheduled', 'canceled'].includes(status)) throw new ApiError(400, '只能批量设为待上课或已取消');
+  const onlyHolidays = b.only_holidays === true;
 
-  const targets = db.prepare(`
-    SELECT id FROM lessons WHERE class_id = ? AND date BETWEEN ? AND ? AND status != ?
+  let targets = db.prepare(`
+    SELECT id, date FROM lessons WHERE class_id = ? AND date BETWEEN ? AND ? AND status != ?
   `).all(cls.id, from, to, status);
-  if (!targets.length) return res.json({ updated: 0, dates: [] });
+  if (onlyHolidays) targets = targets.filter((t) => isHoliday(t.date));
+  if (!targets.length) return res.json({ updated: 0, dates: [], holidays: [], status });
 
   const upd = db.prepare('UPDATE lessons SET status = ? WHERE id = ?');
   db.exec('BEGIN');
@@ -498,10 +526,10 @@ router.post('/bulk-status', teacherOnly, h(async (req, res) => {
     db.exec('ROLLBACK');
     throw e;
   }
-  const dates = db.prepare(
-    'SELECT date FROM lessons WHERE class_id = ? AND date BETWEEN ? AND ? ORDER BY date'
-  ).all(cls.id, from, to).map((r) => r.date);
-  res.json({ updated: targets.length, dates, status });
+  const dates = [...new Set(targets.map((t) => t.date))].sort();
+  // 哪些节假日被整体停掉了，回给前端做提示
+  const holidays = [...new Set(dates.map((d) => holidayLabel(d)).filter(Boolean))];
+  res.json({ updated: targets.length, dates, holidays, status, only_holidays: onlyHolidays });
 }));
 
 export default router;

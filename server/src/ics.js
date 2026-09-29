@@ -1,4 +1,4 @@
-import { toMin, minToTime } from './util.js';
+import { toMin, minToTime, addDays } from './util.js';
 
 /**
  * iCalendar(.ics) 生成与解析。
@@ -44,9 +44,16 @@ export function icsLocal(date, time) {
   return `${String(date).replace(/-/g, '')}T${String(time).replace(':', '')}00`;
 }
 
+/** 'YYYY-MM-DD' -> 'YYYYMMDD' */
+function icsDate(date) {
+  return String(date).replace(/-/g, '');
+}
+
 /**
  * 生成日历。
  * @param events [{ uid, date, start_time, duration_min, summary, location, description, status }]
+ *   全天事件用 { all_day: true, date, end_date?, summary }，end_date 为**含**当天（内部转成 ICS 的排他 DTEND）。
+ * @param opts.holidays 为 true 时保留全天事件的 TRANSP:TRANSPARENT（不占用忙闲）
  */
 export function buildIcs(events, { calendarName = '师枢课表', timezone = 'Asia/Shanghai', reminderMinutes = 30 } = {}) {
   const now = stamp(new Date());
@@ -61,6 +68,23 @@ export function buildIcs(events, { calendarName = '师枢课表', timezone = 'As
   ];
 
   for (const e of events) {
+    // 全天事件（法定节假日/调休补班）：DTEND 用排他日期，即结束日的次日
+    if (e.all_day) {
+      lines.push(
+        'BEGIN:VEVENT',
+        `UID:${e.uid}`,
+        `DTSTAMP:${now}`,
+        `DTSTART;VALUE=DATE:${icsDate(e.date)}`,
+        `DTEND;VALUE=DATE:${icsDate(addDays(e.end_date || e.date, 1))}`,
+        `SUMMARY:${escapeText(e.summary)}`
+      );
+      if (e.location) lines.push(`LOCATION:${escapeText(e.location)}`);
+      if (e.description) lines.push(`DESCRIPTION:${escapeText(e.description)}`);
+      // 节假日不占用「忙碌」时段，避免手机日历上把整周标成没空
+      lines.push('TRANSP:TRANSPARENT', 'END:VEVENT');
+      continue;
+    }
+
     const endTime = minToTime(toMin(e.start_time) + Number(e.duration_min || 60));
     // 结束时间跨天时归到 23:59，避免日历客户端解析出负时长
     const sameDay = toMin(e.start_time) + Number(e.duration_min || 60) <= 1440;

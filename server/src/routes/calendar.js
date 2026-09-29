@@ -4,6 +4,7 @@ import { authRequired, teacherOnly, assertClassAccess, roleAtLeast } from '../mi
 import { h, ApiError, isDate, addDays, genFeedToken, toMin, minToTime } from '../util.js';
 import { findConflicts, conflictText } from '../conflicts.js';
 import { buildIcs, parseIcs } from '../ics.js';
+import { holidayRuns } from '../holidays.js';
 
 const router = Router();
 
@@ -30,6 +31,33 @@ function lessonsFor(user, { from, to, classId = null } = {}) {
     WHERE ${conds.join(' AND ')}
     ORDER BY l.date, l.start_time
   `).all(...params);
+}
+
+/**
+ * 法定节假日 / 调休补班日 -> 全天日历事件。
+ * 连续的同名假期合并成一条（国庆节 7 天就是一个整段），补班日单独成条并标注「补班」。
+ */
+function holidayEvents(from, to) {
+  return holidayRuns(from, to).map((run) => {
+    const isWorkday = run.type === 'workday';
+    const span = run.from === run.to ? run.from : `${run.from} 至 ${run.to}`;
+    return {
+      uid: `holiday-${run.type}-${run.from}@eduhub`,
+      all_day: true,
+      date: run.from,
+      end_date: run.to,
+      summary: isWorkday ? `${run.name}（调休补班）` : `${run.name} 放假`,
+      description: isWorkday
+        ? `${span} 为调休补班日，需要上班。`
+        : `${span} 为国家法定节假日，共 ${daysBetween(run.from, run.to)} 天。`,
+    };
+  });
+}
+
+/** 闭区间天数 */
+function daysBetween(from, to) {
+  const ms = new Date(`${to}T00:00:00`) - new Date(`${from}T00:00:00`);
+  return Math.round(ms / 86400000) + 1;
 }
 
 function toEvents(lessons, { includeRecord = false } = {}) {
@@ -63,7 +91,9 @@ router.get('/feed.ics', h(async (req, res) => {
   const from = addDays(today(), -30);
   const to = addDays(today(), 180);
   const lessons = lessonsFor(user, { from, to }).filter((l) => l.status !== 'canceled');
-  const ics = buildIcs(toEvents(lessons), { calendarName: `师枢课表 - ${user.name}` });
+  // 节假日排在最前，日历客户端里表现为整天的背景事件，不遮挡课时
+  const events = [...holidayEvents(from, to), ...toEvents(lessons)];
+  const ics = buildIcs(events, { calendarName: `师枢课表 - ${user.name}` });
   res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
   res.setHeader('Content-Disposition', 'inline; filename="eduhub.ics"');
   res.setHeader('Cache-Control', 'no-cache');
@@ -107,7 +137,8 @@ router.get('/export.ics', authRequired, h(async (req, res) => {
   if (!lessons.length) throw new ApiError(404, '这段时间没有可导出的课时');
 
   const name = classId ? lessons[0].class_name : `${req.user.name}的课表`;
-  const ics = buildIcs(toEvents(lessons, { includeRecord: true }), { calendarName: `师枢课表 - ${name}` });
+  const events = [...holidayEvents(from, to), ...toEvents(lessons, { includeRecord: true })];
+  const ics = buildIcs(events, { calendarName: `师枢课表 - ${name}` });
   const filename = encodeURIComponent(`${name}-${from}_${to}.ics`);
   res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="eduhub.ics"; filename*=UTF-8''${filename}`);
@@ -141,6 +172,8 @@ router.post('/import.ics', authRequired, teacherOnly, h(async (req, res) => {
     };
     if (e.date < '2000-01-01' || e.date > '2099-12-31') return { ...row, status: 'invalid', reason: '日期超出范围' };
     if (e.canceled) return { ...row, status: 'skip', reason: '日程已取消' };
+    // 全天日程（含本站导出的法定节假日）没有具体上课时间，不应被当成课时导入
+    if (e.all_day) return { ...row, status: 'skip', reason: '全天日程（节假日等），不是课时' };
     const conflicts = findConflicts(req.user.id, {
       class_id: cls.id, date: e.date, start_time: e.start_time, duration_min: e.duration_min, room: row.room,
     });
