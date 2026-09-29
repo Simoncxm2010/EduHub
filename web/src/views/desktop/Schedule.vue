@@ -126,7 +126,13 @@ const showSmart = ref(false);
 function openForm(preset = {}) {
   if (!auth.canTeach) return;
   if (!classes.value.length) return toastError(new Error('请先在「班级」页创建班级'));
-  formPreset.value = { date: preset.date || selected.value, start_time: preset.start_time, class_id: classFilter.value };
+  // start_time 来自点击位置，duration_min 来自拖拽框选（只点一下时为空，用表单默认值）
+  formPreset.value = {
+    date: preset.date || selected.value,
+    start_time: preset.start_time,
+    duration_min: preset.duration_min,
+    class_id: classFilter.value,
+  };
   showForm.value = true;
 }
 
@@ -206,7 +212,7 @@ function openLesson(l) {
         </template>
         <div style="font-size: 12.5px; color: #98a1b5">
           <template v-if="viewMode === 'week'">
-            {{ auth.canTeach ? '把鼠标移到空白时段会显示将要排课的时间，点一下即按该时间排课；点课程块进入签到与记录。' : '点课程块查看签到与课堂记录。' }}
+            {{ auth.canTeach ? '把鼠标移到空白时段会显示将要排课的时间：点一下按该时间排课，按住拖出起止时间可连时长一起定下；点课程块进入签到与记录。' : '点课程块查看签到与课堂记录。' }}
           </template>
           <template v-else>
             {{ auth.canTeach ? '点某一天会切到周视图并可直接排课。' : '点某一天查看当天课程。' }}

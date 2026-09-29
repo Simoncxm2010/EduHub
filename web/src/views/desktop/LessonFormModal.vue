@@ -35,7 +35,12 @@ const quickDates = computed(() => [
   { text: '后天', value: addDays(todayStr, 2) },
   { text: '一周后', value: addDays(todayStr, 7) },
 ]);
-const durations = [30, 40, 45, 60, 75, 90, 120, 180];
+/** 时长选项：拖拽框选出来的时长可能不在预设里，动态补进去免得下拉框空白 */
+const durations = computed(() => {
+  const base = [30, 40, 45, 60, 75, 90, 120, 180];
+  const d = Number(props.preset?.duration_min);
+  return Number.isFinite(d) && d > 0 && !base.includes(d) ? [...base, d].sort((a, b) => a - b) : base;
+});
 
 watch(() => props.show, (visible) => {
   if (!visible) return;
@@ -46,7 +51,7 @@ watch(() => props.show, (visible) => {
     class_id: picked?.id ?? null,
     date: props.preset?.date || todayStr,
     start_time: props.preset?.start_time || localStorage.getItem('eduhub_last_time') || '18:00',
-    duration_min: 90,
+    duration_min: Number(props.preset?.duration_min) || 90,
     room: '',
     topic: '',
     repeat_weeks: 1,

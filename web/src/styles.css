@@ -557,7 +557,7 @@ body {
   min-width: 0;
   position: relative;
   border-left: 1px solid var(--eduhub-line);
-  cursor: pointer;
+  cursor: crosshair; /* 提示这里可以拖出时间段 */
 }
 .wk-col.today { background: var(--eduhub-tint); }
 .wk-line { position: absolute; left: 0; right: 0; height: 1px; background: var(--eduhub-line-2); }
@@ -825,6 +825,32 @@ body {
   padding: 1px 6px;
   border-radius: 6px;
 }
+
+/* 拖拽框选出来的时间段 */
+.wk-select {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border: 1px dashed var(--van-primary-color);
+  background: rgba(79, 110, 242, 0.16);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 2px;
+  overflow: hidden;
+  text-align: center;
+  line-height: 1.25;
+  color: var(--van-primary-color);
+}
+/* 列宽只有 ~97px，时间与时长分两行放，避免被截断 */
+.wk-select b { font-size: 11px; font-weight: 600; white-space: nowrap; }
+.wk-select span { font-size: 10px; opacity: 0.85; white-space: nowrap; }
+html.dark .wk-select { background: rgba(79, 110, 242, 0.26); color: #b9c6ff; }
 .wk-now {
   position: absolute;
   left: 0;

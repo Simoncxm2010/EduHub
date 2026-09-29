@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref } from 'vue';
 import { endTime, LESSON_STATUS, minToTime } from '../utils';
 
 /** 桌面端周日历：按时间定位课程块，重叠课程自动分栏，点空档直接排课 */
@@ -106,26 +106,105 @@ function holidayOf(date) {
 /** 悬停时吸附到半小时，并显示将要排课的时间 */
 const hover = ref(null);
 
+const SNAP = 30;
+const snapMin = (m) => Math.round(m / SNAP) * SNAP;
+const clampMin = (m) => Math.max(startHour.value * 60, Math.min(m, endHour.value * 60));
+
+/**
+ * 把鼠标的 clientY 换算成这一列上的分钟数（已吸附、已夹在网格内）。
+ * 直接用事件坐标算，不依赖 hover 状态——否则一旦 hover 为空
+ * （键盘触发、滚动后位置变了），就会悄悄退回到一个默认时间。
+ */
+function minuteAt(clientY, rect) {
+  const raw = ((clientY - rect.top) / props.hourHeight) * 60 + startHour.value * 60;
+  return clampMin(snapMin(raw));
+}
+
+/**
+ * 整点标签：首尾两个贴到网格内侧。
+ * 默认的 translateY(-50%) 会让 08:00 和 22:00 各有一半压在上下边框上。
+ */
+function hourLabelStyle(h) {
+  const top = (h - startHour.value) * props.hourHeight;
+  if (h === startHour.value) return { top: `${top + 3}px`, transform: 'none' };
+  if (h === endHour.value) return { top: `${top - 3}px`, transform: 'translateY(-100%)' };
+  return { top: `${top}px` };
+}
+
 function onColMove(e, date) {
+  if (drag.value) return; // 拖拽中由选框接管提示
   // 悬停在课程块上时不显示「在此新建」指示——虚线压在已有课上会像幻影
   if (e.target.closest('.wk-block')) {
     if (hover.value) hover.value = null;
     return;
   }
-  const rect = e.currentTarget.getBoundingClientRect();
-  const raw = ((e.clientY - rect.top) / props.hourHeight) * 60 + startHour.value * 60;
-  const snapped = Math.round(raw / 30) * 30;
-  const clamped = Math.max(startHour.value * 60, Math.min(snapped, endHour.value * 60 - 30));
-  hover.value = { date, time: minToTime(clamped), top: ((clamped - startHour.value * 60) / 60) * props.hourHeight };
+  const snapped = minuteAt(e.clientY, e.currentTarget.getBoundingClientRect());
+  hover.value = { date, time: minToTime(snapped), top: ((snapped - startHour.value * 60) / 60) * props.hourHeight };
 }
 
 function onColLeave() {
+  if (drag.value) return;
   hover.value = null;
 }
 
-function onColClick(date) {
-  emit('create', { date, start_time: hover.value?.date === date ? hover.value.time : '18:00' });
+/* ---------------- 点一下排课 / 拖出时长 ---------------- */
+
+const drag = ref(null);
+let dragRect = null;
+
+function onColDown(e, date) {
+  if (e.button !== 0 || e.target.closest('.wk-block')) return;
+  dragRect = e.currentTarget.getBoundingClientRect();
+  const at = minuteAt(e.clientY, dragRect);
+  drag.value = { date, anchor: at, current: at, moved: false };
+  hover.value = null;
+  window.addEventListener('mousemove', onDragMove);
+  window.addEventListener('mouseup', onDragEnd);
 }
+
+function onDragMove(e) {
+  if (!drag.value) return;
+  const at = minuteAt(e.clientY, dragRect);
+  if (at !== drag.value.anchor) drag.value.moved = true;
+  drag.value.current = at;
+}
+
+function onDragEnd() {
+  window.removeEventListener('mousemove', onDragMove);
+  window.removeEventListener('mouseup', onDragEnd);
+  const d = drag.value;
+  drag.value = null;
+  dragRect = null;
+  if (!d) return;
+  const from = Math.min(d.anchor, d.current);
+  const to = Math.max(d.anchor, d.current);
+  // 拖出了至少一格就带上时长；只是点一下则用表单里的默认时长
+  if (d.moved && to - from >= SNAP) {
+    emit('create', { date: d.date, start_time: minToTime(from), duration_min: to - from });
+  } else {
+    emit('create', { date: d.date, start_time: minToTime(from) });
+  }
+}
+
+function dragBoxStyle(d) {
+  const from = Math.min(d.anchor, d.current);
+  const to = Math.max(d.anchor, d.current);
+  return {
+    top: `${((from - startHour.value * 60) / 60) * props.hourHeight}px`,
+    height: `${Math.max(6, ((to - from) / 60) * props.hourHeight - 3)}px`,
+  };
+}
+
+function dragInfo(d) {
+  const from = Math.min(d.anchor, d.current);
+  const to = Math.max(d.anchor, d.current);
+  return { from: minToTime(from), to: minToTime(to), mins: to - from };
+}
+
+onUnmounted(() => {
+  window.removeEventListener('mousemove', onDragMove);
+  window.removeEventListener('mouseup', onDragEnd);
+});
 
 /** 当前时间线：超出可显示时段（比如深夜）就不画，避免画到网格外面 */
 const nowTop = computed(() => {
@@ -168,7 +247,7 @@ function statusText(l) {
           v-for="h in hours"
           :key="h"
           class="wk-hourlabel"
-          :style="{ top: `${(h - startHour) * hourHeight}px` }"
+          :style="hourLabelStyle(h)"
         >{{ String(h).padStart(2, '0') }}:00</div>
       </div>
 
@@ -180,7 +259,7 @@ function statusText(l) {
           :class="{ today: d.isToday, holiday: holidayOf(d.date)?.type === 'holiday' }"
           @mousemove="onColMove($event, d.date)"
           @mouseleave="onColLeave"
-          @click="onColClick(d.date)"
+          @mousedown="onColDown($event, d.date)"
         >
           <div
             v-for="h in hours"
@@ -191,11 +270,21 @@ function statusText(l) {
 
           <!-- 悬停提示：点击即按这个时间排课 -->
           <div
-            v-if="hover && hover.date === d.date"
+            v-if="hover && hover.date === d.date && !drag"
             class="wk-hover"
             :style="{ top: `${hover.top}px` }"
           >
             <span>{{ hover.time }}</span>
+          </div>
+
+          <!-- 拖拽框选：直接拖出时长 -->
+          <div
+            v-if="drag && drag.date === d.date && drag.moved"
+            class="wk-select"
+            :style="dragBoxStyle(drag)"
+          >
+            <b>{{ dragInfo(drag).from }} - {{ dragInfo(drag).to }}</b>
+            <span v-if="dragInfo(drag).mins >= 60">{{ dragInfo(drag).mins }} 分钟</span>
           </div>
 
           <!-- 当前时间线（仅今天这一列） -->
